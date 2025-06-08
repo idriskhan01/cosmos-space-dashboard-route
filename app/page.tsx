@@ -279,48 +279,23 @@ export default function PDFEditorPlatform() {
     setAnnotations([])
     setPdfPages([])
     setCurrentPage(1)
+    setSelectedTool("select") // Reset tool to select
     navigateTo("pdf-editor")
 
     try {
       // Load PDF.js if not already loaded
       if (!(window as any).pdfjsLib) {
-        ;(window as any).pdfjsLib = await import("pdfjs-dist/build/pdf")
-        ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+        const script = document.createElement("script")
+        script.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"
+        script.onload = () => {
+          ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+            "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+          loadPdfDocument(file)
+        }
+        document.head.appendChild(script)
+      } else {
+        loadPdfDocument(file)
       }
-
-      const pdfjsLib = (window as any).pdfjsLib
-
-      // Load the PDF file
-      const loadingTask = pdfjsLib.getDocument(file.url)
-      const pdf = await loadingTask.promise
-
-      // Create pages array
-      const pagesArray: PDFPage[] = []
-
-      // Load first page immediately
-      const page = await pdf.getPage(1)
-      const viewport = page.getViewport({ scale: 1.0 })
-
-      pagesArray.push({
-        id: `page-1`,
-        pageNumber: 1,
-        width: viewport.width,
-        height: viewport.height,
-        rotation: 0,
-      })
-
-      setPdfPages(pagesArray)
-      setPdfLoaded(true)
-
-      // Load remaining pages in background
-      const pagePromises = []
-      for (let i = 2; i <= pdf.numPages; i++) {
-        pagePromises.push(loadPdfPage(pdf, i))
-      }
-
-      const remainingPages = await Promise.all(pagePromises)
-      setPdfPages([...pagesArray, ...remainingPages])
     } catch (error) {
       console.error("Error loading PDF:", error)
       toast({
@@ -332,33 +307,57 @@ export default function PDFEditorPlatform() {
     }
   }
 
-  const loadPdfPage = async (pdf: any, pageNumber: number) => {
-    const page = await pdf.getPage(pageNumber)
-    const viewport = page.getViewport({ scale: 1.0 })
+  const loadPdfDocument = async (file: SelectedFile) => {
+    try {
+      const pdfjsLib = (window as any).pdfjsLib
+      const loadingTask = pdfjsLib.getDocument(file.url)
+      const pdf = await loadingTask.promise
 
-    return {
-      id: `page-${pageNumber}`,
-      pageNumber: pageNumber,
-      width: viewport.width,
-      height: viewport.height,
-      rotation: 0,
+      // Create pages array for all pages
+      const pagesArray: PDFPage[] = []
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const viewport = page.getViewport({ scale: 1.0 })
+
+        pagesArray.push({
+          id: `page-${i}`,
+          pageNumber: i,
+          width: viewport.width,
+          height: viewport.height,
+          rotation: 0,
+        })
+      }
+
+      setPdfPages(pagesArray)
+      setPdfLoaded(true)
+
+      // Store PDF document for later use
+      ;(window as any).currentPdfDoc = pdf
+    } catch (error) {
+      console.error("Error loading PDF document:", error)
+      toast({
+        title: "Error loading PDF",
+        description: "There was a problem loading your PDF file.",
+        variant: "destructive",
+      })
+      navigateTo("tools")
     }
   }
 
   const renderPdfPage = async (pageNumber: number) => {
-    if (!currentEditingFile || !pdfLoaded) return
+    if (!currentEditingFile || !pdfLoaded || !(window as any).currentPdfDoc) return
 
     try {
-      const pdfjsLib = (window as any).pdfjsLib
-      const pdf = await pdfjsLib.getDocument(currentEditingFile.url).promise
+      const pdf = (window as any).currentPdfDoc
       const page = await pdf.getPage(pageNumber)
-
       const canvas = canvasRef.current
       if (!canvas) return
 
       const viewport = page.getViewport({ scale: zoomLevel / 100 })
       canvas.width = viewport.width
       canvas.height = viewport.height
+      canvas.style.width = viewport.width + "px"
+      canvas.style.height = viewport.height + "px"
 
       const renderContext = {
         canvasContext: canvas.getContext("2d"),
@@ -372,10 +371,13 @@ export default function PDFEditorPlatform() {
   }
 
   useEffect(() => {
-    if (currentView === "pdf-editor" && pdfLoaded && currentPage) {
-      renderPdfPage(currentPage)
+    if (currentView === "pdf-editor" && pdfLoaded && currentPage && (window as any).currentPdfDoc) {
+      const timeoutId = setTimeout(() => {
+        renderPdfPage(currentPage)
+      }, 100)
+      return () => clearTimeout(timeoutId)
     }
-  }, [currentView, pdfLoaded, currentPage, zoomLevel])
+  }, [currentView, pdfLoaded, currentPage, zoomLevel, currentEditingFile])
 
   const addAnnotation = (annotation: Omit<Annotation, "id">) => {
     const newAnnotation: Annotation = {
@@ -435,6 +437,16 @@ export default function PDFEditorPlatform() {
       toast({
         title: "Multiple files required",
         description: "Please select at least 2 files to merge.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // For all other operations, allow single file
+    if (operation !== "merge" && selectedFiles.length === 0) {
+      toast({
+        title: "No files selected",
+        description: "Please select a file to process.",
         variant: "destructive",
       })
       return
@@ -630,6 +642,9 @@ export default function PDFEditorPlatform() {
     const pageAnnotations = annotations.filter((a) => a.page === currentPage)
 
     const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      e.stopPropagation()
+
       if (selectedTool === "select") return
 
       const rect = e.currentTarget.getBoundingClientRect()
@@ -641,7 +656,7 @@ export default function PDFEditorPlatform() {
 
       if (selectedTool === "text") {
         const text = prompt("Enter text:")
-        if (text) {
+        if (text && text.trim()) {
           addAnnotation({
             type: "text",
             x,
@@ -673,8 +688,8 @@ export default function PDFEditorPlatform() {
           type: "freehand",
           x,
           y,
-          width: 2,
-          height: 2,
+          width: 3,
+          height: 3,
           color: selectedColor,
           page: currentPage,
         })
@@ -1291,6 +1306,7 @@ export default function PDFEditorPlatform() {
           >
             <Edit3 className="h-6 w-6 mb-2" />
             Edit PDF
+            {selectedFiles.length === 0 && <span className="text-xs mt-1">Select a PDF</span>}
           </Button>
           <Button
             onClick={() => processFiles("merge")}
