@@ -124,6 +124,13 @@ export default function PDFEditorPlatform() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const { toast } = useToast()
+  const [isSignUp, setIsSignUp] = useState(false)
+  const [formData, setFormData] = useState({
+    name: "",
+    email: "",
+    password: "",
+    confirmPassword: "",
+  })
 
   useEffect(() => {
     // Check for saved user session
@@ -513,6 +520,9 @@ export default function PDFEditorPlatform() {
 
   // PDF Editor Component
   const PDFEditor = () => {
+    const [isDrawing, setIsDrawing] = useState(false)
+    const [startPos, setStartPos] = useState({ x: 0, y: 0 })
+
     if (!currentEditingFile) {
       navigateTo("tools")
       return null
@@ -520,6 +530,99 @@ export default function PDFEditorPlatform() {
 
     const currentPageData = pdfPages.find((p) => p.pageNumber === currentPage)
     const pageAnnotations = annotations.filter((a) => a.page === currentPage)
+
+    const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+      if (selectedTool === "select") return
+
+      const rect = e.currentTarget.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const y = e.clientY - rect.top
+
+      if (selectedTool === "text") {
+        const text = prompt("Enter text:")
+        if (text) {
+          addAnnotation({
+            type: "text",
+            x,
+            y,
+            width: text.length * (fontSize * 0.6),
+            height: fontSize + 4,
+            text,
+            color: selectedColor,
+            fontSize,
+            page: currentPage,
+          })
+        }
+      } else if (selectedTool === "highlight") {
+        addAnnotation({
+          type: "highlight",
+          x,
+          y,
+          width: 150,
+          height: 20,
+          color: selectedColor,
+          page: currentPage,
+        })
+      } else if (selectedTool === "rectangle") {
+        addAnnotation({
+          type: "rectangle",
+          x,
+          y,
+          width: 100,
+          height: 60,
+          color: selectedColor,
+          page: currentPage,
+        })
+      } else if (selectedTool === "circle") {
+        addAnnotation({
+          type: "circle",
+          x,
+          y,
+          width: 80,
+          height: 80,
+          color: selectedColor,
+          page: currentPage,
+        })
+      }
+    }
+
+    const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+      if (selectedTool === "freehand") {
+        setIsDrawing(true)
+        const rect = e.currentTarget.getBoundingClientRect()
+        setStartPos({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        })
+      }
+    }
+
+    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+      if (isDrawing && selectedTool === "freehand") {
+        const rect = e.currentTarget.getBoundingClientRect()
+        const currentPos = {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+        }
+
+        // Add a small line segment
+        addAnnotation({
+          type: "freehand",
+          x: startPos.x,
+          y: startPos.y,
+          width: Math.abs(currentPos.x - startPos.x),
+          height: Math.abs(currentPos.y - startPos.y),
+          color: selectedColor,
+          page: currentPage,
+        })
+
+        setStartPos(currentPos)
+      }
+    }
+
+    const handleMouseUp = () => {
+      setIsDrawing(false)
+    }
 
     return (
       <div className="container py-4">
@@ -578,17 +681,19 @@ export default function PDFEditorPlatform() {
 
                 <div className="space-y-2">
                   <Label>Color</Label>
-                  <div className="flex gap-2">
-                    {["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff"].map((color) => (
-                      <button
-                        key={color}
-                        className={`w-6 h-6 rounded border-2 ${
-                          selectedColor === color ? "border-gray-800" : "border-gray-300"
-                        }`}
-                        style={{ backgroundColor: color }}
-                        onClick={() => setSelectedColor(color)}
-                      />
-                    ))}
+                  <div className="flex gap-2 flex-wrap">
+                    {["#ff0000", "#00ff00", "#0000ff", "#ffff00", "#ff00ff", "#00ffff", "#000000", "#888888"].map(
+                      (color) => (
+                        <button
+                          key={color}
+                          className={`w-6 h-6 rounded border-2 ${
+                            selectedColor === color ? "border-gray-800 ring-2 ring-blue-500" : "border-gray-300"
+                          }`}
+                          style={{ backgroundColor: color }}
+                          onClick={() => setSelectedColor(color)}
+                        />
+                      ),
+                    )}
                   </div>
                 </div>
 
@@ -608,6 +713,9 @@ export default function PDFEditorPlatform() {
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => setZoomLevel(Math.max(25, zoomLevel - 25))}>
                       <ZoomOut className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setZoomLevel(100)}>
+                      100%
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => setZoomLevel(Math.min(200, zoomLevel + 25))}>
                       <ZoomIn className="h-4 w-4" />
@@ -632,6 +740,11 @@ export default function PDFEditorPlatform() {
                       onClick={() => setCurrentPage(page.pageNumber)}
                     >
                       Page {page.pageNumber}
+                      {annotations.filter((a) => a.page === page.pageNumber).length > 0 && (
+                        <Badge variant="secondary" className="ml-2 text-xs">
+                          {annotations.filter((a) => a.page === page.pageNumber).length}
+                        </Badge>
+                      )}
                     </Button>
                   ))}
                 </div>
@@ -641,81 +754,183 @@ export default function PDFEditorPlatform() {
 
           {/* PDF Viewer */}
           <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-auto">
-            <div className="p-4">
+            <div className="p-4 flex justify-center">
               <div
-                className="bg-white shadow-lg mx-auto"
+                className="bg-white shadow-2xl border relative"
                 style={{
                   width: `${(currentPageData?.width || 595) * (zoomLevel / 100)}px`,
                   height: `${(currentPageData?.height || 842) * (zoomLevel / 100)}px`,
-                  position: "relative",
+                  transform: `scale(1)`,
+                  transformOrigin: "top left",
                 }}
               >
-                {/* Simulated PDF content */}
-                <div className="absolute inset-0 p-8 text-gray-800">
-                  <h1 className="text-2xl font-bold mb-4">Sample PDF Document</h1>
-                  <p className="mb-4">This is page {currentPage} of your PDF document.</p>
-                  <p className="mb-4">
-                    You can add annotations, text, highlights, and shapes using the tools on the left.
-                  </p>
-                  <p className="mb-4">Click on any tool and then click on the document to add annotations.</p>
+                {/* PDF Content Background */}
+                <div
+                  className="absolute inset-0 p-8 text-gray-800 select-none pointer-events-none"
+                  style={{ fontSize: `${12 * (zoomLevel / 100)}px` }}
+                >
+                  <div className="mb-6">
+                    <h1 className="text-3xl font-bold mb-4 text-gray-900">Sample PDF Document</h1>
+                    <div className="w-16 h-1 bg-blue-600 mb-6"></div>
+                  </div>
+
+                  <div className="space-y-4 text-gray-700 leading-relaxed">
+                    <p className="text-lg">
+                      <strong>
+                        Page {currentPage} of {pdfPages.length}
+                      </strong>
+                    </p>
+
+                    <p>
+                      This is a sample PDF document that demonstrates the editing capabilities of PDFPro. You can add
+                      various types of annotations using the tools in the left panel.
+                    </p>
+
+                    <div className="bg-gray-50 p-4 rounded border-l-4 border-blue-500">
+                      <h3 className="font-semibold mb-2">Available Tools:</h3>
+                      <ul className="list-disc list-inside space-y-1 text-sm">
+                        <li>Text Tool - Click anywhere to add text</li>
+                        <li>Highlight Tool - Add colored highlights</li>
+                        <li>Rectangle Tool - Draw rectangular shapes</li>
+                        <li>Circle Tool - Draw circular shapes</li>
+                        <li>Freehand Tool - Draw freely with your mouse</li>
+                      </ul>
+                    </div>
+
+                    <p>
+                      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut
+                      labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-4 mt-6">
+                      <div className="bg-blue-50 p-3 rounded">
+                        <h4 className="font-semibold text-blue-800">Feature 1</h4>
+                        <p className="text-sm text-blue-600">Professional editing tools</p>
+                      </div>
+                      <div className="bg-green-50 p-3 rounded">
+                        <h4 className="font-semibold text-green-800">Feature 2</h4>
+                        <p className="text-sm text-green-600">Real-time collaboration</p>
+                      </div>
+                    </div>
+
+                    {currentPage > 1 && (
+                      <div className="mt-8 p-4 bg-yellow-50 rounded">
+                        <p className="text-yellow-800">
+                          This is additional content on page {currentPage}. Each page can have different content and
+                          independent annotations.
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Annotations */}
+                {/* Annotations Layer */}
                 {pageAnnotations.map((annotation) => (
                   <div
                     key={annotation.id}
-                    className="absolute border-2 cursor-pointer"
+                    className="absolute cursor-pointer group"
                     style={{
-                      left: annotation.x,
-                      top: annotation.y,
-                      width: annotation.width,
-                      height: annotation.height,
-                      borderColor: annotation.color,
-                      backgroundColor: annotation.type === "highlight" ? `${annotation.color}40` : "transparent",
+                      left: annotation.x * (zoomLevel / 100),
+                      top: annotation.y * (zoomLevel / 100),
+                      width: (annotation.width || 100) * (zoomLevel / 100),
+                      height: (annotation.height || 20) * (zoomLevel / 100),
+                      fontSize: (annotation.fontSize || 16) * (zoomLevel / 100),
                       color: annotation.color,
-                      fontSize: annotation.fontSize,
+                      zIndex: 10,
                     }}
-                    onClick={() => removeAnnotation(annotation.id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (confirm("Remove this annotation?")) {
+                        removeAnnotation(annotation.id)
+                      }
+                    }}
                   >
-                    {annotation.text}
+                    {annotation.type === "text" && (
+                      <div
+                        className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
+                        style={{ color: annotation.color }}
+                      >
+                        {annotation.text}
+                      </div>
+                    )}
+
+                    {annotation.type === "highlight" && (
+                      <div
+                        className="opacity-40 rounded"
+                        style={{
+                          backgroundColor: annotation.color,
+                          width: "100%",
+                          height: "100%",
+                        }}
+                      />
+                    )}
+
+                    {annotation.type === "rectangle" && (
+                      <div
+                        className="border-2 bg-transparent rounded"
+                        style={{
+                          borderColor: annotation.color,
+                          width: "100%",
+                          height: "100%",
+                        }}
+                      />
+                    )}
+
+                    {annotation.type === "circle" && (
+                      <div
+                        className="border-2 bg-transparent rounded-full"
+                        style={{
+                          borderColor: annotation.color,
+                          width: "100%",
+                          height: "100%",
+                        }}
+                      />
+                    )}
+
+                    {annotation.type === "freehand" && (
+                      <div
+                        className="rounded"
+                        style={{
+                          backgroundColor: annotation.color,
+                          width: "100%",
+                          height: "100%",
+                          minWidth: "2px",
+                          minHeight: "2px",
+                        }}
+                      />
+                    )}
+
+                    {/* Delete button on hover */}
+                    <button
+                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        removeAnnotation(annotation.id)
+                      }}
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
 
-                {/* Click handler for adding annotations */}
+                {/* Interactive Layer */}
                 <div
-                  className="absolute inset-0 cursor-crosshair"
-                  onClick={(e) => {
-                    if (selectedTool === "select") return
-
-                    const rect = e.currentTarget.getBoundingClientRect()
-                    const x = e.clientX - rect.left
-                    const y = e.clientY - rect.top
-
-                    if (selectedTool === "text") {
-                      const text = prompt("Enter text:")
-                      if (text) {
-                        addAnnotation({
-                          type: "text",
-                          x,
-                          y,
-                          text,
-                          color: selectedColor,
-                          fontSize,
-                          page: currentPage,
-                        })
-                      }
-                    } else {
-                      addAnnotation({
-                        type: selectedTool as any,
-                        x,
-                        y,
-                        width: 100,
-                        height: 50,
-                        color: selectedColor,
-                        page: currentPage,
-                      })
-                    }
+                  className="absolute inset-0 z-20"
+                  style={{
+                    cursor:
+                      selectedTool === "select"
+                        ? "default"
+                        : selectedTool === "text"
+                          ? "text"
+                          : selectedTool === "freehand"
+                            ? "crosshair"
+                            : "crosshair",
                   }}
+                  onClick={handleCanvasClick}
+                  onMouseDown={handleMouseDown}
+                  onMouseMove={handleMouseMove}
+                  onMouseUp={handleMouseUp}
+                  onMouseLeave={handleMouseUp}
                 />
               </div>
             </div>
@@ -725,22 +940,26 @@ export default function PDFEditorPlatform() {
           <div className="lg:w-64 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Document</CardTitle>
+                <CardTitle className="text-lg">Document Info</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="text-sm">
-                  <p>
-                    <strong>File:</strong> {currentEditingFile.file.name}
-                  </p>
-                  <p>
+                <div className="text-sm space-y-2">
+                  <div>
+                    <strong>File:</strong>
+                    <p className="text-gray-600 break-words">{currentEditingFile.file.name}</p>
+                  </div>
+                  <div>
                     <strong>Size:</strong> {(currentEditingFile.file.size / (1024 * 1024)).toFixed(2)} MB
-                  </p>
-                  <p>
+                  </div>
+                  <div>
                     <strong>Pages:</strong> {pdfPages.length}
-                  </p>
-                  <p>
-                    <strong>Current:</strong> {currentPage}
-                  </p>
+                  </div>
+                  <div>
+                    <strong>Current Page:</strong> {currentPage}
+                  </div>
+                  <div>
+                    <strong>Total Annotations:</strong> {annotations.length}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -758,23 +977,49 @@ export default function PDFEditorPlatform() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Annotations ({pageAnnotations.length})</CardTitle>
+                <CardTitle className="text-lg">Page Annotations ({pageAnnotations.length})</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {pageAnnotations.map((annotation) => (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {pageAnnotations.map((annotation, index) => (
                     <div
                       key={annotation.id}
-                      className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded"
+                      className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-800 rounded text-sm"
                     >
-                      <span className="text-sm capitalize">{annotation.type}</span>
-                      <Button variant="ghost" size="sm" onClick={() => removeAnnotation(annotation.id)}>
+                      <div className="flex items-center space-x-2">
+                        <div className="w-3 h-3 rounded" style={{ backgroundColor: annotation.color }} />
+                        <span className="capitalize">
+                          {annotation.type} {index + 1}
+                        </span>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeAnnotation(annotation.id)}
+                        className="h-6 w-6 p-0"
+                      >
                         <X className="h-3 w-3" />
                       </Button>
                     </div>
                   ))}
-                  {pageAnnotations.length === 0 && <p className="text-sm text-gray-500">No annotations on this page</p>}
+                  {pageAnnotations.length === 0 && (
+                    <p className="text-sm text-gray-500 text-center py-4">No annotations on this page</p>
+                  )}
                 </div>
+
+                {pageAnnotations.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full mt-2"
+                    onClick={() => {
+                      const pageAnnotationIds = pageAnnotations.map((a) => a.id)
+                      setAnnotations((prev) => prev.filter((a) => !pageAnnotationIds.includes(a.id)))
+                    }}
+                  >
+                    Clear Page Annotations
+                  </Button>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -886,14 +1131,6 @@ export default function PDFEditorPlatform() {
 
   // Authentication Component
   const AuthPage = () => {
-    const [isSignUp, setIsSignUp] = useState(false)
-    const [formData, setFormData] = useState({
-      name: "",
-      email: "",
-      password: "",
-      confirmPassword: "",
-    })
-
     const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault()
       setIsLoading(true)
