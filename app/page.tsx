@@ -3,8 +3,7 @@
 import type React from "react"
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -27,20 +26,11 @@ import {
   Type,
   Globe,
   BookOpen,
-  Zap,
-  Shield,
-  Users,
-  Star,
-  Check,
   X,
   Sun,
   Moon,
   UserIcon,
-  Settings,
   LogOut,
-  CreditCard,
-  History,
-  HelpCircle,
   Trash2,
   ArrowLeft,
   Save,
@@ -101,7 +91,7 @@ interface PDFPage {
   width: number
   height: number
   rotation: number
-  annotations: Annotation[]
+  canvas?: HTMLCanvasElement
 }
 
 // Main App Component
@@ -124,8 +114,10 @@ export default function PDFEditorPlatform() {
   const [isDrawing, setIsDrawing] = useState(false)
   const [startPos, setStartPos] = useState({ x: 0, y: 0 })
   const [pdfLoaded, setPdfLoaded] = useState(false)
+  const [drawingAnnotation, setDrawingAnnotation] = useState<Annotation | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const { toast } = useToast()
 
   useEffect(() => {
@@ -141,6 +133,16 @@ export default function PDFEditorPlatform() {
       if (savedTheme === "dark") {
         setDarkMode(true)
         document.documentElement.classList.add("dark")
+      }
+
+      // Load PDF.js script
+      const script = document.createElement("script")
+      script.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"
+      script.async = true
+      document.body.appendChild(script)
+
+      return () => {
+        document.body.removeChild(script)
       }
     }
   }, [])
@@ -271,31 +273,109 @@ export default function PDFEditorPlatform() {
   }
 
   // PDF Editor Functions
-  const openPDFEditor = (file: SelectedFile) => {
+  const openPDFEditor = async (file: SelectedFile) => {
     setCurrentEditingFile(file)
     setPdfLoaded(false)
-
-    // Initialize PDF pages (simulated)
-    const pageCount = 5 // We'll simulate 5 pages
-    const pages: PDFPage[] = Array.from({ length: pageCount }, (_, i) => ({
-      id: `page-${i + 1}`,
-      pageNumber: i + 1,
-      width: 595,
-      height: 842,
-      rotation: 0,
-      annotations: [],
-    }))
-
-    setPdfPages(pages)
-    setCurrentPage(1)
     setAnnotations([])
+    setPdfPages([])
+    setCurrentPage(1)
     navigateTo("pdf-editor")
 
-    // Simulate PDF loading
-    setTimeout(() => {
+    try {
+      // Load PDF.js if not already loaded
+      if (!(window as any).pdfjsLib) {
+        ;(window as any).pdfjsLib = await import("pdfjs-dist/build/pdf")
+        ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+      }
+
+      const pdfjsLib = (window as any).pdfjsLib
+
+      // Load the PDF file
+      const loadingTask = pdfjsLib.getDocument(file.url)
+      const pdf = await loadingTask.promise
+
+      // Create pages array
+      const pagesArray: PDFPage[] = []
+
+      // Load first page immediately
+      const page = await pdf.getPage(1)
+      const viewport = page.getViewport({ scale: 1.0 })
+
+      pagesArray.push({
+        id: `page-1`,
+        pageNumber: 1,
+        width: viewport.width,
+        height: viewport.height,
+        rotation: 0,
+      })
+
+      setPdfPages(pagesArray)
       setPdfLoaded(true)
-    }, 1000)
+
+      // Load remaining pages in background
+      const pagePromises = []
+      for (let i = 2; i <= pdf.numPages; i++) {
+        pagePromises.push(loadPdfPage(pdf, i))
+      }
+
+      const remainingPages = await Promise.all(pagePromises)
+      setPdfPages([...pagesArray, ...remainingPages])
+    } catch (error) {
+      console.error("Error loading PDF:", error)
+      toast({
+        title: "Error loading PDF",
+        description: "There was a problem loading your PDF file.",
+        variant: "destructive",
+      })
+      navigateTo("tools")
+    }
   }
+
+  const loadPdfPage = async (pdf: any, pageNumber: number) => {
+    const page = await pdf.getPage(pageNumber)
+    const viewport = page.getViewport({ scale: 1.0 })
+
+    return {
+      id: `page-${pageNumber}`,
+      pageNumber: pageNumber,
+      width: viewport.width,
+      height: viewport.height,
+      rotation: 0,
+    }
+  }
+
+  const renderPdfPage = async (pageNumber: number) => {
+    if (!currentEditingFile || !pdfLoaded) return
+
+    try {
+      const pdfjsLib = (window as any).pdfjsLib
+      const pdf = await pdfjsLib.getDocument(currentEditingFile.url).promise
+      const page = await pdf.getPage(pageNumber)
+
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const viewport = page.getViewport({ scale: zoomLevel / 100 })
+      canvas.width = viewport.width
+      canvas.height = viewport.height
+
+      const renderContext = {
+        canvasContext: canvas.getContext("2d"),
+        viewport: viewport,
+      }
+
+      await page.render(renderContext).promise
+    } catch (error) {
+      console.error("Error rendering PDF page:", error)
+    }
+  }
+
+  useEffect(() => {
+    if (currentView === "pdf-editor" && pdfLoaded && currentPage) {
+      renderPdfPage(currentPage)
+    }
+  }, [currentView, pdfLoaded, currentPage, zoomLevel])
 
   const addAnnotation = (annotation: Omit<Annotation, "id">) => {
     const newAnnotation: Annotation = {
@@ -336,7 +416,7 @@ export default function PDFEditorPlatform() {
 
       // Navigate back to tools after saving
       navigateTo("tools")
-    }, 2000)
+    }, 1000)
   }
 
   // Process files function
@@ -398,8 +478,8 @@ export default function PDFEditorPlatform() {
 
         setFileOperations((prev) => [newOperation, ...prev])
 
-        const processingTime = Math.min(Math.max((selectedFile.file.size / (1024 * 1024)) * 1000, 2000), 10000)
-        const steps = 20
+        const processingTime = Math.min(Math.max((selectedFile.file.size / (1024 * 1024)) * 500, 1000), 5000)
+        const steps = 10
 
         for (let i = 0; i <= steps; i++) {
           await new Promise((resolve) => setTimeout(resolve, processingTime / steps))
@@ -549,12 +629,15 @@ export default function PDFEditorPlatform() {
     const currentPageData = pdfPages.find((p) => p.pageNumber === currentPage)
     const pageAnnotations = annotations.filter((a) => a.page === currentPage)
 
-    const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
       if (selectedTool === "select") return
 
       const rect = e.currentTarget.getBoundingClientRect()
       const x = e.clientX - rect.left
       const y = e.clientY - rect.top
+
+      setStartPos({ x, y })
+      setIsDrawing(true)
 
       if (selectedTool === "text") {
         const text = prompt("Enter text:")
@@ -571,246 +654,82 @@ export default function PDFEditorPlatform() {
             page: currentPage,
           })
         }
-      } else if (selectedTool === "highlight") {
-        addAnnotation({
-          type: "highlight",
+        setIsDrawing(false)
+      } else if (selectedTool === "highlight" || selectedTool === "rectangle" || selectedTool === "circle") {
+        // Create a temporary annotation that will be updated during mouse move
+        const newAnnotation: Annotation = {
+          id: "temp-" + Date.now().toString(),
+          type: selectedTool as any,
           x,
           y,
-          width: 150,
-          height: 20,
+          width: 0,
+          height: 0,
           color: selectedColor,
           page: currentPage,
-        })
-      } else if (selectedTool === "rectangle") {
-        addAnnotation({
-          type: "rectangle",
-          x,
-          y,
-          width: 100,
-          height: 60,
-          color: selectedColor,
-          page: currentPage,
-        })
-      } else if (selectedTool === "circle") {
-        addAnnotation({
-          type: "circle",
-          x,
-          y,
-          width: 80,
-          height: 80,
-          color: selectedColor,
-          page: currentPage,
-        })
-      }
-    }
-
-    const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (selectedTool === "freehand") {
-        setIsDrawing(true)
-        const rect = e.currentTarget.getBoundingClientRect()
-        setStartPos({
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top,
-        })
-      }
-    }
-
-    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (isDrawing && selectedTool === "freehand") {
-        const rect = e.currentTarget.getBoundingClientRect()
-        const currentPos = {
-          x: e.clientX - rect.left,
-          y: e.clientY - rect.top,
         }
-
-        // Add a small line segment
+        setDrawingAnnotation(newAnnotation)
+      } else if (selectedTool === "freehand") {
         addAnnotation({
           type: "freehand",
-          x: startPos.x,
-          y: startPos.y,
-          width: Math.abs(currentPos.x - startPos.x),
-          height: Math.abs(currentPos.y - startPos.y),
+          x,
+          y,
+          width: 2,
+          height: 2,
           color: selectedColor,
           page: currentPage,
         })
-
-        setStartPos(currentPos)
       }
     }
 
-    const handleMouseUp = () => {
-      setIsDrawing(false)
+    const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isDrawing || selectedTool === "select" || selectedTool === "text") return
+
+      const rect = e.currentTarget.getBoundingClientRect()
+      const currentX = e.clientX - rect.left
+      const currentY = e.clientY - rect.top
+
+      if (selectedTool === "freehand") {
+        // Add a new point for freehand drawing
+        addAnnotation({
+          type: "freehand",
+          x: currentX,
+          y: currentY,
+          width: 2,
+          height: 2,
+          color: selectedColor,
+          page: currentPage,
+        })
+      } else if (drawingAnnotation) {
+        // Update the temporary annotation dimensions
+        setDrawingAnnotation({
+          ...drawingAnnotation,
+          width: Math.abs(currentX - startPos.x),
+          height: Math.abs(currentY - startPos.y),
+          x: Math.min(startPos.x, currentX),
+          y: Math.min(startPos.y, currentY),
+        })
+      }
     }
 
-    // PDF content for each page
-    const getPdfContent = (pageNumber: number) => {
-      switch (pageNumber) {
-        case 1:
-          return (
-            <>
-              <div className="mb-6">
-                <h1 className="text-3xl font-bold mb-4 text-gray-900">{currentEditingFile.file.name}</h1>
-                <div className="w-16 h-1 bg-blue-600 mb-6"></div>
-              </div>
+    const handleCanvasMouseUp = () => {
+      if (!isDrawing) return
 
-              <div className="space-y-4 text-gray-700 leading-relaxed">
-                <p className="text-lg">
-                  <strong>
-                    Page {currentPage} of {pdfPages.length}
-                  </strong>
-                </p>
+      setIsDrawing(false)
 
-                <p>
-                  This is a preview of your PDF document. You can add various types of annotations using the tools in
-                  the left panel.
-                </p>
-
-                <div className="bg-gray-50 p-4 rounded border-l-4 border-blue-500">
-                  <h3 className="font-semibold mb-2">Available Tools:</h3>
-                  <ul className="list-disc list-inside space-y-1 text-sm">
-                    <li>Text Tool - Click anywhere to add text</li>
-                    <li>Highlight Tool - Add colored highlights</li>
-                    <li>Rectangle Tool - Draw rectangular shapes</li>
-                    <li>Circle Tool - Draw circular shapes</li>
-                    <li>Freehand Tool - Draw freely with your mouse</li>
-                  </ul>
-                </div>
-
-                <p>
-                  Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et
-                  dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
-                </p>
-              </div>
-            </>
-          )
-        case 2:
-          return (
-            <>
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 1: Introduction</h2>
-                <div className="w-16 h-1 bg-green-600 mb-6"></div>
-              </div>
-
-              <div className="space-y-4 text-gray-700 leading-relaxed">
-                <p>
-                  This is page {pageNumber} of your document. Each page can have different content and independent
-                  annotations.
-                </p>
-
-                <p>
-                  Nulla facilisi. Maecenas nec justo vitae nisi pharetra euismod. Cras bibendum erat ut sapien
-                  condimentum, vel ultricies nunc ultricies. Proin auctor aliquam dolor, in mollis tellus tempor vel.
-                </p>
-
-                <div className="bg-green-50 p-4 rounded">
-                  <h4 className="font-semibold mb-2">Important Note</h4>
-                  <p>All annotations you add will be saved with the document when you click the "Save PDF" button.</p>
-                </div>
-
-                <p>
-                  Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Sed at tortor
-                  at tortor finibus lobortis eget eu magna. Mauris vel convallis eros.
-                </p>
-              </div>
-            </>
-          )
-        case 3:
-          return (
-            <>
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 2: Methods</h2>
-                <div className="w-16 h-1 bg-purple-600 mb-6"></div>
-              </div>
-
-              <div className="space-y-4 text-gray-700 leading-relaxed">
-                <p>
-                  This is page {pageNumber} of your document. You can navigate between pages using the page buttons in
-                  the left panel.
-                </p>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-3 rounded">
-                    <h4 className="font-semibold">Method 1</h4>
-                    <p className="text-sm">Detailed description of the first method</p>
-                  </div>
-                  <div className="bg-gray-50 p-3 rounded">
-                    <h4 className="font-semibold">Method 2</h4>
-                    <p className="text-sm">Detailed description of the second method</p>
-                  </div>
-                </div>
-
-                <p>
-                  Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Sed
-                  euismod, urna eu tincidunt consectetur, nisi nisl aliquam nunc, eget aliquam nisl nunc sit amet nisl.
-                </p>
-              </div>
-            </>
-          )
-        case 4:
-          return (
-            <>
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 3: Results</h2>
-                <div className="w-16 h-1 bg-amber-600 mb-6"></div>
-              </div>
-
-              <div className="space-y-4 text-gray-700 leading-relaxed">
-                <p>This is page {pageNumber} of your document. You can add annotations to any page.</p>
-
-                <div className="bg-amber-50 p-4 rounded border border-amber-200">
-                  <h4 className="font-semibold mb-2">Results Summary</h4>
-                  <ul className="list-disc list-inside space-y-1">
-                    <li>Finding 1: Lorem ipsum dolor sit amet</li>
-                    <li>Finding 2: Consectetur adipiscing elit</li>
-                    <li>Finding 3: Sed do eiusmod tempor incididunt</li>
-                  </ul>
-                </div>
-
-                <p>
-                  Donec euismod, nisl eget ultricies ultricies, nisl nisl aliquam nisl, eget aliquam nisl nunc sit amet
-                  nisl. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas.
-                </p>
-              </div>
-            </>
-          )
-        case 5:
-          return (
-            <>
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 4: Conclusion</h2>
-                <div className="w-16 h-1 bg-red-600 mb-6"></div>
-              </div>
-
-              <div className="space-y-4 text-gray-700 leading-relaxed">
-                <p>
-                  This is the final page of your document. You can save your edited PDF using the "Save PDF" button.
-                </p>
-
-                <div className="bg-red-50 p-4 rounded">
-                  <h4 className="font-semibold mb-2">Conclusion</h4>
-                  <p>
-                    In conclusion, this document demonstrates the PDF editing capabilities of PDFPro. You can add text,
-                    highlights, shapes, and freehand drawings to any page.
-                  </p>
-                </div>
-
-                <p>
-                  Thank you for using PDFPro! If you have any questions or feedback, please contact our support team.
-                </p>
-              </div>
-            </>
-          )
-        default:
-          return (
-            <div className="space-y-4 text-gray-700 leading-relaxed">
-              <p className="text-lg">
-                <strong>
-                  Page {currentPage} of {pdfPages.length}
-                </strong>
-              </p>
-              <p>This is additional content for page {pageNumber}.</p>
-            </div>
-          )
+      // Add the final annotation if we have a temporary one
+      if (drawingAnnotation) {
+        if (drawingAnnotation.width > 5 || drawingAnnotation.height > 5) {
+          addAnnotation({
+            type: drawingAnnotation.type,
+            x: drawingAnnotation.x,
+            y: drawingAnnotation.y,
+            width: drawingAnnotation.width,
+            height: drawingAnnotation.height,
+            color: drawingAnnotation.color,
+            page: currentPage,
+          })
+        }
+        setDrawingAnnotation(null)
       }
     }
 
@@ -953,132 +872,170 @@ export default function PDFEditorPlatform() {
                   </div>
                 </div>
               ) : (
-                <div
-                  ref={pdfContainerRef}
-                  className="bg-white shadow-2xl border relative"
-                  style={{
-                    width: `${(currentPageData?.width || 595) * (zoomLevel / 100)}px`,
-                    height: `${(currentPageData?.height || 842) * (zoomLevel / 100)}px`,
-                    transform: `scale(1)`,
-                    transformOrigin: "top left",
-                  }}
-                >
-                  {/* PDF Content Background */}
+                <div className="relative">
+                  {/* PDF Canvas */}
                   <div
-                    className="absolute inset-0 p-8 text-gray-800 select-none pointer-events-none"
-                    style={{ fontSize: `${12 * (zoomLevel / 100)}px` }}
+                    className="bg-white shadow-lg mx-auto relative"
+                    style={{
+                      width: currentPageData ? currentPageData.width * (zoomLevel / 100) : 595,
+                      height: currentPageData ? currentPageData.height * (zoomLevel / 100) : 842,
+                    }}
                   >
-                    {getPdfContent(currentPage)}
-                  </div>
+                    <canvas ref={canvasRef} className="absolute top-0 left-0" />
 
-                  {/* Annotations Layer */}
-                  {pageAnnotations.map((annotation) => (
+                    {/* Annotations Layer */}
                     <div
-                      key={annotation.id}
-                      className="absolute cursor-pointer group"
+                      className="absolute top-0 left-0 w-full h-full"
+                      onMouseDown={handleCanvasMouseDown}
+                      onMouseMove={handleCanvasMouseMove}
+                      onMouseUp={handleCanvasMouseUp}
+                      onMouseLeave={handleCanvasMouseUp}
                       style={{
-                        left: annotation.x * (zoomLevel / 100),
-                        top: annotation.y * (zoomLevel / 100),
-                        width: (annotation.width || 100) * (zoomLevel / 100),
-                        height: (annotation.height || 20) * (zoomLevel / 100),
-                        fontSize: (annotation.fontSize || 16) * (zoomLevel / 100),
-                        color: annotation.color,
-                        zIndex: 10,
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (confirm("Remove this annotation?")) {
-                          removeAnnotation(annotation.id)
-                        }
+                        cursor: selectedTool === "select" ? "default" : selectedTool === "text" ? "text" : "crosshair",
                       }}
                     >
-                      {annotation.type === "text" && (
+                      {/* Existing Annotations */}
+                      {pageAnnotations.map((annotation) => (
                         <div
-                          className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
-                          style={{ color: annotation.color }}
+                          key={annotation.id}
+                          className="absolute cursor-pointer group"
+                          style={{
+                            left: annotation.x,
+                            top: annotation.y,
+                            width: annotation.width || 0,
+                            height: annotation.height || 0,
+                            zIndex: 10,
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (selectedTool === "select") {
+                              if (confirm("Remove this annotation?")) {
+                                removeAnnotation(annotation.id)
+                              }
+                            }
+                          }}
                         >
-                          {annotation.text}
+                          {annotation.type === "text" && (
+                            <div
+                              className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
+                              style={{
+                                color: annotation.color,
+                                fontSize: annotation.fontSize,
+                              }}
+                            >
+                              {annotation.text}
+                            </div>
+                          )}
+
+                          {annotation.type === "highlight" && (
+                            <div
+                              className="opacity-40 rounded"
+                              style={{
+                                backgroundColor: annotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
+
+                          {annotation.type === "rectangle" && (
+                            <div
+                              className="border-2 bg-transparent rounded"
+                              style={{
+                                borderColor: annotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
+
+                          {annotation.type === "circle" && (
+                            <div
+                              className="border-2 bg-transparent rounded-full"
+                              style={{
+                                borderColor: annotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
+
+                          {annotation.type === "freehand" && (
+                            <div
+                              className="rounded"
+                              style={{
+                                backgroundColor: annotation.color,
+                                width: "100%",
+                                height: "100%",
+                                minWidth: "2px",
+                                minHeight: "2px",
+                              }}
+                            />
+                          )}
+
+                          {/* Delete button on hover */}
+                          {selectedTool === "select" && (
+                            <button
+                              className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                removeAnnotation(annotation.id)
+                              }}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      ))}
+
+                      {/* Drawing Annotation (preview while drawing) */}
+                      {drawingAnnotation && (
+                        <div
+                          className="absolute"
+                          style={{
+                            left: drawingAnnotation.x,
+                            top: drawingAnnotation.y,
+                            width: drawingAnnotation.width || 0,
+                            height: drawingAnnotation.height || 0,
+                            zIndex: 20,
+                          }}
+                        >
+                          {drawingAnnotation.type === "highlight" && (
+                            <div
+                              className="opacity-40 rounded"
+                              style={{
+                                backgroundColor: drawingAnnotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
+
+                          {drawingAnnotation.type === "rectangle" && (
+                            <div
+                              className="border-2 bg-transparent rounded"
+                              style={{
+                                borderColor: drawingAnnotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
+
+                          {drawingAnnotation.type === "circle" && (
+                            <div
+                              className="border-2 bg-transparent rounded-full"
+                              style={{
+                                borderColor: drawingAnnotation.color,
+                                width: "100%",
+                                height: "100%",
+                              }}
+                            />
+                          )}
                         </div>
                       )}
-
-                      {annotation.type === "highlight" && (
-                        <div
-                          className="opacity-40 rounded"
-                          style={{
-                            backgroundColor: annotation.color,
-                            width: "100%",
-                            height: "100%",
-                          }}
-                        />
-                      )}
-
-                      {annotation.type === "rectangle" && (
-                        <div
-                          className="border-2 bg-transparent rounded"
-                          style={{
-                            borderColor: annotation.color,
-                            width: "100%",
-                            height: "100%",
-                          }}
-                        />
-                      )}
-
-                      {annotation.type === "circle" && (
-                        <div
-                          className="border-2 bg-transparent rounded-full"
-                          style={{
-                            borderColor: annotation.color,
-                            width: "100%",
-                            height: "100%",
-                          }}
-                        />
-                      )}
-
-                      {annotation.type === "freehand" && (
-                        <div
-                          className="rounded"
-                          style={{
-                            backgroundColor: annotation.color,
-                            width: "100%",
-                            height: "100%",
-                            minWidth: "2px",
-                            minHeight: "2px",
-                          }}
-                        />
-                      )}
-
-                      {/* Delete button on hover */}
-                      <button
-                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          removeAnnotation(annotation.id)
-                        }}
-                      >
-                        ×
-                      </button>
                     </div>
-                  ))}
-
-                  {/* Interactive Layer */}
-                  <div
-                    className="absolute inset-0 z-20"
-                    style={{
-                      cursor:
-                        selectedTool === "select"
-                          ? "default"
-                          : selectedTool === "text"
-                            ? "text"
-                            : selectedTool === "freehand"
-                              ? "crosshair"
-                              : "crosshair",
-                    }}
-                    onClick={handleCanvasClick}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseUp}
-                  />
+                  </div>
                 </div>
               )}
             </div>
@@ -1172,244 +1129,6 @@ export default function PDFEditorPlatform() {
             </Card>
           </div>
         </div>
-      </div>
-    )
-  }
-
-  // Home Page Component
-  const HomePage = () => (
-    <div className="flex flex-col min-h-screen">
-      <section className="w-full py-12 md:py-24 lg:py-32 xl:py-48">
-        <div className="container px-4 md:px-6">
-          <div className="flex flex-col items-center space-y-4 text-center">
-            <div className="space-y-2">
-              <h1 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl lg:text-6xl/none">
-                Edit, Convert, and Manage PDFs with Ease
-              </h1>
-              <p className="mx-auto max-w-[700px] text-gray-500 md:text-xl dark:text-gray-400">
-                The ultimate PDF editor and file conversion platform. Edit PDFs, convert between formats, and manage
-                your documents with professional-grade tools.
-              </p>
-            </div>
-            <div className="space-x-4">
-              <Button size="lg" onClick={() => navigateTo("tools")}>
-                Get Started Free
-              </Button>
-              <Button variant="outline" size="lg" onClick={() => navigateTo("pricing")}>
-                View Pricing
-              </Button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="w-full py-12 md:py-24 lg:py-32 bg-gray-50 dark:bg-gray-900">
-        <div className="container px-4 md:px-6">
-          <div className="flex flex-col items-center justify-center space-y-4 text-center">
-            <div className="space-y-2">
-              <h2 className="text-3xl font-bold tracking-tighter sm:text-5xl">Powerful PDF Tools</h2>
-              <p className="max-w-[900px] text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
-                Everything you need to work with PDFs and convert files between formats.
-              </p>
-            </div>
-          </div>
-          <div className="mx-auto grid max-w-5xl items-center gap-6 py-12 lg:grid-cols-3 lg:gap-12">
-            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => navigateTo("tools")}>
-              <CardHeader>
-                <Edit3 className="h-10 w-10 mb-2" />
-                <CardTitle>PDF Editor</CardTitle>
-                <CardDescription>
-                  Edit text, add annotations, merge, split, and compress PDFs with ease.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => navigateTo("tools")}>
-              <CardHeader>
-                <FileSpreadsheet className="h-10 w-10 mb-2" />
-                <CardTitle>File Converter</CardTitle>
-                <CardDescription>
-                  Convert PDFs to Word, Excel, PowerPoint, images, and many other formats.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-            <Card className="cursor-pointer hover:shadow-lg transition-shadow" onClick={() => navigateTo("pricing")}>
-              <CardHeader>
-                <Shield className="h-10 w-10 mb-2" />
-                <CardTitle>Secure & Private</CardTitle>
-                <CardDescription>
-                  Your files are processed securely and deleted automatically after 24 hours.
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          </div>
-        </div>
-      </section>
-
-      <section className="w-full py-12 md:py-24 lg:py-32">
-        <div className="container px-4 md:px-6">
-          <div className="flex flex-col items-center justify-center space-y-4 text-center">
-            <div className="space-y-2">
-              <h2 className="text-3xl font-bold tracking-tighter sm:text-5xl">Trusted by Millions</h2>
-              <p className="max-w-[900px] text-gray-500 md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed dark:text-gray-400">
-                Join over 1 million users who trust PDFPro for their document needs.
-              </p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mt-8">
-              <div className="flex flex-col items-center space-y-2">
-                <Users className="h-12 w-12 text-blue-600" />
-                <h3 className="text-2xl font-bold">1M+</h3>
-                <p className="text-gray-500">Active Users</p>
-              </div>
-              <div className="flex flex-col items-center space-y-2">
-                <FileText className="h-12 w-12 text-green-600" />
-                <h3 className="text-2xl font-bold">10M+</h3>
-                <p className="text-gray-500">Files Processed</p>
-              </div>
-              <div className="flex flex-col items-center space-y-2">
-                <Star className="h-12 w-12 text-yellow-600" />
-                <h3 className="text-2xl font-bold">4.9/5</h3>
-                <p className="text-gray-500">User Rating</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-    </div>
-  )
-
-  // Authentication Component
-  const AuthPage = () => {
-    const [isSignUp, setIsSignUp] = useState(false)
-    const [formData, setFormData] = useState({
-      name: "",
-      email: "",
-      password: "",
-      confirmPassword: "",
-    })
-
-    const handleSubmit = async (e: React.FormEvent) => {
-      e.preventDefault()
-      setIsLoading(true)
-
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-
-        if (isSignUp) {
-          if (formData.password !== formData.confirmPassword) {
-            throw new Error("Passwords do not match")
-          }
-          const newUser: AppUser = {
-            id: Date.now().toString(),
-            email: formData.email,
-            name: formData.name,
-            plan: "free",
-          }
-          setUser(newUser)
-          if (typeof window !== "undefined") {
-            localStorage.setItem("user", JSON.stringify(newUser))
-          }
-          toast({
-            title: "Account created successfully!",
-            description: "Welcome to PDFPro. You can now access all free features.",
-          })
-        } else {
-          const existingUser: AppUser = {
-            id: Date.now().toString(),
-            email: formData.email,
-            name: formData.email.split("@")[0],
-            plan: "free",
-          }
-          setUser(existingUser)
-          if (typeof window !== "undefined") {
-            localStorage.setItem("user", JSON.stringify(existingUser))
-          }
-          toast({
-            title: "Signed in successfully!",
-            description: "Welcome back to PDFPro.",
-          })
-        }
-        navigateTo("dashboard")
-      } catch (error) {
-        toast({
-          title: "Error",
-          description: error instanceof Error ? error.message : "Something went wrong",
-          variant: "destructive",
-        })
-      } finally {
-        setIsLoading(false)
-      }
-    }
-
-    return (
-      <div className="container flex items-center justify-center min-h-screen py-12">
-        <Card className="w-full max-w-md">
-          <CardHeader>
-            <CardTitle>{isSignUp ? "Create Account" : "Sign In"}</CardTitle>
-            <CardDescription>
-              {isSignUp ? "Create your account to access premium features" : "Sign in to your account to continue"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {isSignUp && (
-                <div className="space-y-2">
-                  <Label htmlFor="name">Full Name</Label>
-                  <Input
-                    id="name"
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    required
-                  />
-                </div>
-              )}
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required
-                />
-              </div>
-              {isSignUp && (
-                <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirm Password</Label>
-                  <Input
-                    id="confirmPassword"
-                    type="password"
-                    value={formData.confirmPassword}
-                    onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                    required
-                  />
-                </div>
-              )}
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? "Processing..." : isSignUp ? "Create Account" : "Sign In"}
-              </Button>
-            </form>
-            <div className="mt-4 text-center">
-              <button
-                type="button"
-                onClick={() => setIsSignUp(!isSignUp)}
-                className="text-sm text-blue-600 hover:underline"
-              >
-                {isSignUp ? "Already have an account? Sign in" : "Don't have an account? Sign up"}
-              </button>
-            </div>
-          </CardContent>
-        </Card>
       </div>
     )
   }
@@ -1549,7 +1268,7 @@ export default function PDFEditorPlatform() {
               if (selectedFiles.length === 0) {
                 toast({
                   title: "No files selected",
-                  description: "Please select a PDF file to annotate.",
+                  description: "Please select a PDF file to edit.",
                   variant: "destructive",
                 })
                 return
@@ -1562,16 +1281,16 @@ export default function PDFEditorPlatform() {
               } else {
                 toast({
                   title: "No PDF files",
-                  description: "Please select a PDF file to annotate.",
+                  description: "Please select a PDF file to edit.",
                   variant: "destructive",
                 })
               }
             }}
             className="h-20 flex-col"
-            disabled={selectedFiles.length === 0 || isLoading}
+            disabled={isLoading}
           >
             <Edit3 className="h-6 w-6 mb-2" />
-            Annotate
+            Edit PDF
           </Button>
           <Button
             onClick={() => processFiles("merge")}
@@ -1802,395 +1521,15 @@ export default function PDFEditorPlatform() {
     )
   }
 
-  // Pricing Page Component
-  const PricingPage = () => {
-    const handleSubscribe = (plan: string) => {
-      if (!user) {
-        navigateTo("auth")
-        return
-      }
-
-      toast({
-        title: "Redirecting to payment...",
-        description: "You will be redirected to Stripe for secure payment processing.",
-      })
-
-      setTimeout(() => {
-        const updatedUser = { ...user, plan: "premium" as const }
-        setUser(updatedUser)
-        if (typeof window !== "undefined") {
-          localStorage.setItem("user", JSON.stringify(updatedUser))
-        }
-        toast({
-          title: "Subscription activated!",
-          description: "Welcome to PDFPro Premium. Enjoy unlimited access to all features.",
-        })
-        navigateTo("dashboard")
-      }, 2000)
-    }
-
-    return (
-      <div className="container py-12">
-        <div className="text-center space-y-4 mb-12">
-          <h1 className="text-4xl font-bold">Choose Your Plan</h1>
-          <p className="text-xl text-gray-500">Start free, upgrade when you need more power</p>
-        </div>
-
-        <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-          <Card className="relative">
-            <CardHeader>
-              <CardTitle className="text-2xl">Free</CardTitle>
-              <CardDescription>Perfect for occasional use</CardDescription>
-              <div className="text-3xl font-bold">
-                $0<span className="text-lg font-normal">/month</span>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <ul className="space-y-3">
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Basic PDF editing tools
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Convert PDF to Word, Excel, Image
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Merge up to 2 PDFs
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  File size limit: 10MB
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />3 operations per day
-                </li>
-                <li className="flex items-center">
-                  <X className="h-5 w-5 text-red-500 mr-2" />
-                  OCR (text recognition)
-                </li>
-                <li className="flex items-center">
-                  <X className="h-5 w-5 text-red-500 mr-2" />
-                  Batch processing
-                </li>
-              </ul>
-              <Button className="w-full" variant="outline" onClick={() => navigateTo("tools")}>
-                Get Started Free
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card className="relative border-blue-500">
-            <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
-              <Badge className="bg-blue-500">Most Popular</Badge>
-            </div>
-            <CardHeader>
-              <CardTitle className="text-2xl">Premium</CardTitle>
-              <CardDescription>For professionals and power users</CardDescription>
-              <div className="text-3xl font-bold">
-                $9.99<span className="text-lg font-normal">/month</span>
-              </div>
-              <p className="text-sm text-gray-500">or $99.99/year (save 17%)</p>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <ul className="space-y-3">
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  All PDF editing tools
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Convert to/from all formats
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Unlimited merging & splitting
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  File size limit: 100MB
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Unlimited operations
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  OCR (text recognition)
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Batch processing
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Priority support
-                </li>
-                <li className="flex items-center">
-                  <Check className="h-5 w-5 text-green-500 mr-2" />
-                  Cloud storage integration
-                </li>
-              </ul>
-              <Button className="w-full" onClick={() => handleSubscribe("premium")}>
-                Upgrade to Premium
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="text-center mt-12">
-          <p className="text-gray-500">
-            All plans include secure file processing and automatic file deletion after 24 hours.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
-  // Dashboard Component
-  const Dashboard = () => {
-    if (!user) {
-      navigateTo("auth")
-      return null
-    }
-
-    return (
-      <div className="container py-8">
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">Welcome back, {user.name}!</h1>
-              <p className="text-gray-500">
-                You&apos;re on the {user.plan} plan
-                {user.plan === "premium" && user.subscriptionEnd && (
-                  <span> (expires {user.subscriptionEnd.toLocaleDateString()})</span>
-                )}
-              </p>
-            </div>
-            {user.plan === "free" && (
-              <Button onClick={() => navigateTo("pricing")}>
-                <Zap className="h-4 w-4 mr-2" />
-                Upgrade to Premium
-              </Button>
-            )}
-          </div>
-
-          <div className="grid md:grid-cols-3 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <FileText className="h-5 w-5 mr-2" />
-                  Quick Actions
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Button variant="outline" className="w-full justify-start" onClick={() => navigateTo("tools")}>
-                  <Edit3 className="h-4 w-4 mr-2" />
-                  Edit PDF
-                </Button>
-                <Button variant="outline" className="w-full justify-start" onClick={() => navigateTo("tools")}>
-                  <FileSpreadsheet className="h-4 w-4 mr-2" />
-                  Convert Files
-                </Button>
-                <Button variant="outline" className="w-full justify-start" onClick={() => navigateTo("tools")}>
-                  <Merge className="h-4 w-4 mr-2" />
-                  Merge PDFs
-                </Button>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <History className="h-5 w-5 mr-2" />
-                  Recent Files
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {fileOperations.length > 0 ? (
-                  <div className="space-y-2">
-                    {fileOperations.slice(0, 3).map((operation) => (
-                      <div key={operation.id} className="flex items-center justify-between text-sm">
-                        <span className="truncate">{operation.fileName}</span>
-                        <Badge variant="outline">{operation.status}</Badge>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-gray-500 text-sm">No recent files</p>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center">
-                  <Settings className="h-5 w-5 mr-2" />
-                  Account
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="text-sm">
-                  <p>
-                    <strong>Email:</strong> {user.email}
-                  </p>
-                  <p>
-                    <strong>Plan:</strong> {user.plan}
-                  </p>
-                </div>
-                {user.plan === "premium" ? (
-                  <Button variant="outline" size="sm" className="w-full">
-                    <CreditCard className="h-4 w-4 mr-2" />
-                    Manage Subscription
-                  </Button>
-                ) : (
-                  <Button size="sm" className="w-full" onClick={() => navigateTo("pricing")}>
-                    <Zap className="h-4 w-4 mr-2" />
-                    Upgrade Plan
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Usage Statistics */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Usage This Month</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-4 gap-4">
-                <div className="text-center">
-                  <div className="text-2xl font-bold">{fileOperations.length}</div>
-                  <div className="text-sm text-gray-500">Files Processed</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold">
-                    {fileOperations.filter((op) => op.operation.includes("convert")).length}
-                  </div>
-                  <div className="text-sm text-gray-500">Conversions</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold">
-                    {fileOperations.filter((op) => op.operation.includes("merge")).length}
-                  </div>
-                  <div className="text-sm text-gray-500">Merges</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-2xl font-bold">
-                    {fileOperations.filter((op) => op.status === "completed").length}
-                  </div>
-                  <div className="text-sm text-gray-500">Completed</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    )
-  }
-
-  // FAQ Page Component
-  const FAQPage = () => (
-    <div className="container py-12">
-      <div className="max-w-3xl mx-auto">
-        <div className="text-center space-y-4 mb-12">
-          <h1 className="text-4xl font-bold">Frequently Asked Questions</h1>
-          <p className="text-xl text-gray-500">Find answers to common questions about PDFPro</p>
-        </div>
-
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center">
-                <HelpCircle className="h-5 w-5 mr-2" />
-                Is my data secure?
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                Yes, absolutely. All files are processed securely using industry-standard encryption. Your files are
-                automatically deleted from our servers after 24 hours, and we never store or share your personal
-                documents.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>What file formats do you support?</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                We support a wide range of formats including PDF, Word (.doc, .docx), Excel (.xls, .xlsx), PowerPoint
-                (.ppt, .pptx), images (.jpg, .png, .gif), text files (.txt), HTML, and many more. Our universal
-                converter can handle most common file types.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>What&apos;s the difference between free and premium?</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                Free users get access to basic PDF editing tools and conversions with a 10MB file size limit and 3
-                operations per day. Premium users get unlimited access to all tools, 100MB file size limit, OCR
-                capabilities, batch processing, and priority support.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Can I cancel my subscription anytime?</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                Yes, you can cancel your premium subscription at any time. You&apos;ll continue to have access to
-                premium features until the end of your billing period, after which your account will revert to the free
-                plan.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Do you offer refunds?</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                We offer a 30-day money-back guarantee for all premium subscriptions. If you&apos;re not satisfied with
-                our service, contact our support team within 30 days of your purchase for a full refund.
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
-  )
-
   // Main render logic
   const renderCurrentView = () => {
     switch (currentView) {
-      case "home":
-        return <HomePage />
-      case "auth":
-        return <AuthPage />
-      case "tools":
-        return <ToolsPage />
-      case "pricing":
-        return <PricingPage />
-      case "dashboard":
-        return <Dashboard />
-      case "faq":
-        return <FAQPage />
       case "pdf-editor":
         return <PDFEditor />
+      case "tools":
+        return <ToolsPage />
       default:
-        return <HomePage />
+        return <ToolsPage />
     }
   }
 
@@ -2198,82 +1537,6 @@ export default function PDFEditorPlatform() {
     <div className={`min-h-screen ${darkMode ? "dark" : ""}`}>
       <Header />
       <main>{renderCurrentView()}</main>
-
-      {/* Footer */}
-      <footer className="border-t bg-gray-50 dark:bg-gray-900">
-        <div className="container py-8">
-          <div className="grid md:grid-cols-4 gap-8">
-            <div>
-              <div className="flex items-center space-x-2 mb-4">
-                <FileText className="h-6 w-6" />
-                <span className="font-bold">PDFPro</span>
-              </div>
-              <p className="text-sm text-gray-500">The ultimate PDF editor and file conversion platform.</p>
-            </div>
-            <div>
-              <h3 className="font-semibold mb-4">Tools</h3>
-              <ul className="space-y-2 text-sm text-gray-500">
-                <li>
-                  <button onClick={() => navigateTo("tools")}>PDF Editor</button>
-                </li>
-                <li>
-                  <button onClick={() => navigateTo("tools")}>File Converter</button>
-                </li>
-                <li>
-                  <button onClick={() => navigateTo("tools")}>Merge PDF</button>
-                </li>
-                <li>
-                  <button onClick={() => navigateTo("tools")}>Split PDF</button>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-semibold mb-4">Company</h3>
-              <ul className="space-y-2 text-sm text-gray-500">
-                <li>
-                  <button onClick={() => navigateTo("pricing")}>Pricing</button>
-                </li>
-                <li>
-                  <button onClick={() => navigateTo("faq")}>FAQ</button>
-                </li>
-                <li>
-                  <a href="#" className="hover:underline">
-                    About
-                  </a>
-                </li>
-                <li>
-                  <a href="#" className="hover:underline">
-                    Contact
-                  </a>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="font-semibold mb-4">Legal</h3>
-              <ul className="space-y-2 text-sm text-gray-500">
-                <li>
-                  <a href="#" className="hover:underline">
-                    Privacy Policy
-                  </a>
-                </li>
-                <li>
-                  <a href="#" className="hover:underline">
-                    Terms of Service
-                  </a>
-                </li>
-                <li>
-                  <a href="#" className="hover:underline">
-                    Cookie Policy
-                  </a>
-                </li>
-              </ul>
-            </div>
-          </div>
-          <div className="border-t mt-8 pt-8 text-center text-sm text-gray-500">
-            <p>&copy; {new Date().getFullYear()} PDFPro. All rights reserved.</p>
-          </div>
-        </div>
-      </footer>
     </div>
   )
 }
