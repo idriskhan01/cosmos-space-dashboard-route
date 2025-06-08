@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
@@ -142,44 +142,113 @@ export default function PDFEditorPlatform() {
   const [historyIndex, setHistoryIndex] = useState(0)
   const [textEditMode, setTextEditMode] = useState(false)
   const [selectedTextItem, setSelectedTextItem] = useState<PDFTextItem | null>(null)
+  const [pdfLibLoaded, setPdfLibLoaded] = useState(false)
+  const [renderingPage, setRenderingPage] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textLayerRef = useRef<HTMLDivElement>(null)
   const textEditRef = useRef<HTMLTextAreaElement>(null)
+  const pdfDocRef = useRef<any>(null)
+  const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
 
-  // Add to history when annotations change
-  useEffect(() => {
-    if (annotations.length > 0 || historyIndex > 0) {
-      // Only add to history if this is a user action, not an undo/redo
-      if (historyIndex === history.length - 1) {
-        setHistory((prev) => [...prev.slice(0, historyIndex + 1), { annotations: [...annotations] }])
-        setHistoryIndex((prev) => prev + 1)
-      }
-    }
-  }, [annotations, historyIndex])
+  // Stable callback for adding to history
+  const addToHistory = useCallback(
+    (newAnnotations: Annotation[]) => {
+      setHistory((prev) => {
+        const newHistory = [...prev.slice(0, historyIndex + 1), { annotations: [...newAnnotations] }]
+        return newHistory
+      })
+      setHistoryIndex((prev) => prev + 1)
+    },
+    [historyIndex],
+  )
 
-  const undo = () => {
+  // Add to history when annotations change (with debouncing)
+  useEffect(() => {
+    if (annotations.length > 0) {
+      const timeoutId = setTimeout(() => {
+        addToHistory(annotations)
+      }, 500) // Debounce for 500ms
+
+      return () => clearTimeout(timeoutId)
+    }
+  }, [annotations, addToHistory])
+
+  const undo = useCallback(() => {
     if (historyIndex > 0) {
       const newIndex = historyIndex - 1
       setHistoryIndex(newIndex)
       setAnnotations(history[newIndex].annotations)
     }
-  }
+  }, [historyIndex, history])
 
-  const redo = () => {
+  const redo = useCallback(() => {
     if (historyIndex < history.length - 1) {
       const newIndex = historyIndex + 1
       setHistoryIndex(newIndex)
       setAnnotations(history[newIndex].annotations)
     }
-  }
+  }, [historyIndex, history])
 
+  // Load PDF.js library
   useEffect(() => {
-    // Check for saved user session
-    if (typeof window !== "undefined") {
+    if (typeof window === "undefined") return
+
+    const loadPdfJs = async () => {
+      try {
+        // Check if PDF.js is already loaded
+        if ((window as any).pdfjsLib) {
+          setPdfLibLoaded(true)
+          return
+        }
+
+        // Load PDF.js script
+        const script = document.createElement("script")
+        script.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"
+        script.async = true
+
+        script.onload = () => {
+          if ((window as any).pdfjsLib) {
+            ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
+              "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
+            setPdfLibLoaded(true)
+            console.log("PDF.js loaded successfully")
+          }
+        }
+
+        script.onerror = () => {
+          console.error("Failed to load PDF.js")
+          toast({
+            title: "Error loading PDF library",
+            description: "Please refresh the page to try again.",
+            variant: "destructive",
+          })
+        }
+
+        document.head.appendChild(script)
+
+        return () => {
+          if (document.head.contains(script)) {
+            document.head.removeChild(script)
+          }
+        }
+      } catch (error) {
+        console.error("Error loading PDF.js:", error)
+      }
+    }
+
+    loadPdfJs()
+  }, [toast])
+
+  // Initialize app
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    try {
+      // Check for saved user session
       const savedUser = localStorage.getItem("user")
       if (savedUser) {
         setUser(JSON.parse(savedUser))
@@ -191,48 +260,40 @@ export default function PDFEditorPlatform() {
         setDarkMode(true)
         document.documentElement.classList.add("dark")
       }
-
-      // Load PDF.js script
-      const script = document.createElement("script")
-      script.src = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"
-      script.async = true
-      script.onload = () => {
-        ;(window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-          "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
-      }
-      document.body.appendChild(script)
-
-      return () => {
-        if (document.body.contains(script)) {
-          document.body.removeChild(script)
-        }
-      }
+    } catch (error) {
+      console.error("Error initializing app:", error)
     }
   }, [])
 
-  const navigateTo = (view: string) => {
-    setPreviousView(currentView)
-    setCurrentView(view)
-  }
+  const navigateTo = useCallback(
+    (view: string) => {
+      setPreviousView(currentView)
+      setCurrentView(view)
+    },
+    [currentView],
+  )
 
-  const goBack = () => {
+  const goBack = useCallback(() => {
     setCurrentView(previousView)
-  }
+  }, [previousView])
 
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode)
-    if (typeof window !== "undefined") {
-      if (!darkMode) {
-        document.documentElement.classList.add("dark")
-        localStorage.setItem("theme", "dark")
-      } else {
-        document.documentElement.classList.remove("dark")
-        localStorage.setItem("theme", "light")
+  const toggleDarkMode = useCallback(() => {
+    setDarkMode((prev) => {
+      const newMode = !prev
+      if (typeof window !== "undefined") {
+        if (newMode) {
+          document.documentElement.classList.add("dark")
+          localStorage.setItem("theme", "dark")
+        } else {
+          document.documentElement.classList.remove("dark")
+          localStorage.setItem("theme", "light")
+        }
       }
-    }
-  }
+      return newMode
+    })
+  }, [])
 
-  const handleSignOut = () => {
+  const handleSignOut = useCallback(() => {
     setUser(null)
     if (typeof window !== "undefined") {
       localStorage.removeItem("user")
@@ -242,51 +303,54 @@ export default function PDFEditorPlatform() {
       title: "Signed out successfully",
       description: "You have been signed out of your account.",
     })
-  }
+  }, [navigateTo, toast])
 
   // File handling functions
-  const validateFile = (file: File): boolean => {
-    const maxSize = user?.plan === "premium" ? 100 * 1024 * 1024 : 10 * 1024 * 1024
-    const allowedTypes = [
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-      "image/gif",
-      "image/bmp",
-      "text/plain",
-      "text/html",
-      "text/markdown",
-    ]
+  const validateFile = useCallback(
+    (file: File): boolean => {
+      const maxSize = user?.plan === "premium" ? 100 * 1024 * 1024 : 10 * 1024 * 1024
+      const allowedTypes = [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/gif",
+        "image/bmp",
+        "text/plain",
+        "text/html",
+        "text/markdown",
+      ]
 
-    if (file.size > maxSize) {
-      toast({
-        title: "File too large",
-        description: `File size must be less than ${user?.plan === "premium" ? "100MB" : "10MB"}.`,
-        variant: "destructive",
-      })
-      return false
-    }
+      if (file.size > maxSize) {
+        toast({
+          title: "File too large",
+          description: `File size must be less than ${user?.plan === "premium" ? "100MB" : "10MB"}.`,
+          variant: "destructive",
+        })
+        return false
+      }
 
-    if (!allowedTypes.includes(file.type)) {
-      toast({
-        title: "Unsupported file type",
-        description: "Please select a supported file format.",
-        variant: "destructive",
-      })
-      return false
-    }
+      if (!allowedTypes.includes(file.type)) {
+        toast({
+          title: "Unsupported file type",
+          description: "Please select a supported file format.",
+          variant: "destructive",
+        })
+        return false
+      }
 
-    return true
-  }
+      return true
+    },
+    [user?.plan, toast],
+  )
 
-  const createFilePreview = (file: File): Promise<string> => {
+  const createFilePreview = useCallback((file: File): Promise<string> => {
     return new Promise((resolve) => {
       if (file.type.startsWith("image/")) {
         const reader = new FileReader()
@@ -298,285 +362,364 @@ export default function PDFEditorPlatform() {
         resolve("")
       }
     })
-  }
+  }, [])
 
-  const handleFileSelect = async (files: FileList) => {
-    if (files.length === 0) return
+  const handleFileSelect = useCallback(
+    async (files: FileList) => {
+      if (files.length === 0) return
 
-    const file = files[0] // Only take the first file
-    if (validateFile(file)) {
-      const preview = await createFilePreview(file)
-      const url = URL.createObjectURL(file)
-      const newFile: SelectedFile = {
-        file,
-        preview,
-        id: Date.now().toString(),
-        url,
+      const file = files[0] // Only take the first file
+      if (validateFile(file)) {
+        try {
+          const preview = await createFilePreview(file)
+          const url = URL.createObjectURL(file)
+          const newFile: SelectedFile = {
+            file,
+            preview,
+            id: Date.now().toString(),
+            url,
+          }
+
+          setSelectedFile(newFile)
+          setCurrentEditingFile(newFile)
+
+          // Reset state when loading a new file
+          setHistory([{ annotations: [] }])
+          setHistoryIndex(0)
+          setAnnotations([])
+          setPdfLoaded(false)
+          setPdfPages([])
+          setCurrentPage(1)
+
+          // If it's a PDF, load it immediately
+          if (file.type === "application/pdf") {
+            await loadPdfDocument(newFile)
+          }
+
+          toast({
+            title: "File selected",
+            description: `${file.name} is ready for editing.`,
+          })
+        } catch (error) {
+          console.error("Error selecting file:", error)
+          toast({
+            title: "Error selecting file",
+            description: "There was a problem with the selected file.",
+            variant: "destructive",
+          })
+        }
+      }
+    },
+    [validateFile, createFilePreview, toast],
+  )
+
+  const removeFile = useCallback(() => {
+    try {
+      // Clean up object URL
+      if (selectedFile?.url) {
+        URL.revokeObjectURL(selectedFile.url)
       }
 
-      setSelectedFile(newFile)
-      setCurrentEditingFile(newFile)
-
-      // Reset history when loading a new file
+      setSelectedFile(null)
+      setCurrentEditingFile(null)
+      setPdfLoaded(false)
+      setPdfPages([])
+      setAnnotations([])
+      setCurrentPage(1)
       setHistory([{ annotations: [] }])
       setHistoryIndex(0)
-      setAnnotations([])
 
-      // If it's a PDF, load it immediately
-      if (file.type === "application/pdf") {
-        await loadPdfDocument(newFile)
+      // Clean up PDF document reference
+      if (pdfDocRef.current) {
+        pdfDocRef.current = null
       }
 
-      toast({
-        title: "File selected",
-        description: `${file.name} is ready for editing.`,
-      })
+      // Clear any pending render timeouts
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+        renderTimeoutRef.current = null
+      }
+    } catch (error) {
+      console.error("Error removing file:", error)
     }
-  }
-
-  const removeFile = () => {
-    setSelectedFile(null)
-    setCurrentEditingFile(null)
-    setPdfLoaded(false)
-    setPdfPages([])
-    setAnnotations([])
-    setCurrentPage(1)
-    setHistory([{ annotations: [] }])
-    setHistoryIndex(0)
-    if ((window as any).currentPdfDoc) {
-      delete (window as any).currentPdfDoc
-    }
-  }
+  }, [selectedFile])
 
   // PDF Editor Functions
-  const loadPdfDocument = async (file: SelectedFile) => {
-    try {
-      if (!(window as any).pdfjsLib) {
+  const loadPdfDocument = useCallback(
+    async (file: SelectedFile) => {
+      if (!pdfLibLoaded) {
         toast({
-          title: "PDF.js not loaded",
+          title: "PDF library not ready",
           description: "Please wait for the PDF library to load and try again.",
           variant: "destructive",
         })
         return
       }
 
-      const pdfjsLib = (window as any).pdfjsLib
-      const loadingTask = pdfjsLib.getDocument(file.url)
-      const pdf = await loadingTask.promise
-
-      // Create pages array for all pages
-      const pagesArray: PDFPage[] = []
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i)
-        const viewport = page.getViewport({ scale: 1.0 })
-
-        // Extract text content for text editing with better positioning
-        const textContent = await page.getTextContent()
-        const textItems: PDFTextItem[] = []
-
-        textContent.items.forEach((item: any, index: number) => {
-          if (item.str && item.str.trim()) {
-            const transform = item.transform || [1, 0, 0, 1, 0, 0]
-            const x = transform[4]
-            const y = viewport.height - transform[5] // Flip y-coordinate
-
-            // Better width calculation based on font metrics
-            const charWidth = (item.fontSize || 12) * 0.6
-            const width = item.width || item.str.length * charWidth
-            const height = (item.fontSize || 12) * 1.2
-
-            textItems.push({
-              id: `text-${i}-${index}`,
-              text: item.str,
-              x,
-              y,
-              width,
-              height,
-              fontSize: item.fontSize || 12,
-              fontFamily: item.fontName || "sans-serif",
-            })
-          }
-        })
-
-        pagesArray.push({
-          id: `page-${i}`,
-          pageNumber: i,
-          width: viewport.width,
-          height: viewport.height,
-          rotation: 0,
-          textItems,
-        })
-      }
-
-      setPdfPages(pagesArray)
-      setPdfLoaded(true)
-      setCurrentPage(1)
-
-      // Store PDF document for later use
-      ;(window as any).currentPdfDoc = pdf
-
-      toast({
-        title: "PDF loaded successfully",
-        description: `${pdf.numPages} pages loaded and ready for editing.`,
-      })
-    } catch (error) {
-      console.error("Error loading PDF document:", error)
-      toast({
-        title: "Error loading PDF",
-        description: "There was a problem loading your PDF file.",
-        variant: "destructive",
-      })
-    }
-  }
-
-  const renderPdfPage = async (pageNumber: number) => {
-    if (!currentEditingFile || !pdfLoaded || !(window as any).currentPdfDoc) return
-
-    try {
-      const pdf = (window as any).currentPdfDoc
-      const page = await pdf.getPage(pageNumber)
-      const canvas = canvasRef.current
-      if (!canvas) return
-
-      const context = canvas.getContext("2d")
-      if (!context) return
-
-      // Clear the canvas first
-      context.clearRect(0, 0, canvas.width, canvas.height)
-
-      const viewport = page.getViewport({ scale: zoomLevel / 100 })
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      canvas.style.width = viewport.width + "px"
-      canvas.style.height = viewport.height + "px"
-
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      }
-
-      await page.render(renderContext).promise
-      console.log(`PDF page ${pageNumber} rendered successfully`)
-    } catch (error) {
-      console.error("Error rendering PDF page:", error)
-      // Retry rendering after a short delay
-      setTimeout(() => {
-        if (pdfLoaded && (window as any).currentPdfDoc) {
-          renderPdfPage(pageNumber)
+      try {
+        const pdfjsLib = (window as any).pdfjsLib
+        if (!pdfjsLib) {
+          throw new Error("PDF.js library not available")
         }
-      }, 500)
-    }
-  }
 
+        const loadingTask = pdfjsLib.getDocument(file.url)
+        const pdf = await loadingTask.promise
+
+        // Store PDF document reference
+        pdfDocRef.current = pdf
+
+        // Create pages array for all pages
+        const pagesArray: PDFPage[] = []
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i)
+          const viewport = page.getViewport({ scale: 1.0 })
+
+          // Extract text content for text editing with better positioning
+          let textItems: PDFTextItem[] = []
+          try {
+            const textContent = await page.getTextContent()
+            textItems = textContent.items
+              .filter((item: any) => item.str && item.str.trim())
+              .map((item: any, index: number) => {
+                const transform = item.transform || [1, 0, 0, 1, 0, 0]
+                const x = transform[4]
+                const y = viewport.height - transform[5] // Flip y-coordinate
+
+                // Better width calculation based on font metrics
+                const charWidth = (item.fontSize || 12) * 0.6
+                const width = item.width || item.str.length * charWidth
+                const height = (item.fontSize || 12) * 1.2
+
+                return {
+                  id: `text-${i}-${index}`,
+                  text: item.str,
+                  x,
+                  y,
+                  width,
+                  height,
+                  fontSize: item.fontSize || 12,
+                  fontFamily: item.fontName || "sans-serif",
+                }
+              })
+          } catch (textError) {
+            console.warn("Could not extract text from page", i, textError)
+          }
+
+          pagesArray.push({
+            id: `page-${i}`,
+            pageNumber: i,
+            width: viewport.width,
+            height: viewport.height,
+            rotation: 0,
+            textItems,
+          })
+        }
+
+        setPdfPages(pagesArray)
+        setPdfLoaded(true)
+        setCurrentPage(1)
+
+        toast({
+          title: "PDF loaded successfully",
+          description: `${pdf.numPages} pages loaded and ready for editing.`,
+        })
+      } catch (error) {
+        console.error("Error loading PDF document:", error)
+        toast({
+          title: "Error loading PDF",
+          description: "There was a problem loading your PDF file.",
+          variant: "destructive",
+        })
+      }
+    },
+    [pdfLibLoaded, toast],
+  )
+
+  const renderPdfPage = useCallback(
+    async (pageNumber: number) => {
+      if (!currentEditingFile || !pdfLoaded || !pdfDocRef.current || renderingPage) {
+        return
+      }
+
+      setRenderingPage(true)
+
+      try {
+        const pdf = pdfDocRef.current
+        const page = await pdf.getPage(pageNumber)
+        const canvas = canvasRef.current
+
+        if (!canvas) {
+          setRenderingPage(false)
+          return
+        }
+
+        const context = canvas.getContext("2d")
+        if (!context) {
+          setRenderingPage(false)
+          return
+        }
+
+        // Clear the canvas first
+        context.clearRect(0, 0, canvas.width, canvas.height)
+
+        const viewport = page.getViewport({ scale: zoomLevel / 100 })
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        canvas.style.width = viewport.width + "px"
+        canvas.style.height = viewport.height + "px"
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        }
+
+        await page.render(renderContext).promise
+        console.log(`PDF page ${pageNumber} rendered successfully`)
+      } catch (error) {
+        console.error("Error rendering PDF page:", error)
+        // Retry rendering after a short delay
+        if (renderTimeoutRef.current) {
+          clearTimeout(renderTimeoutRef.current)
+        }
+        renderTimeoutRef.current = setTimeout(() => {
+          if (pdfLoaded && pdfDocRef.current) {
+            setRenderingPage(false)
+            renderPdfPage(pageNumber)
+          }
+        }, 1000)
+      } finally {
+        setRenderingPage(false)
+      }
+    },
+    [currentEditingFile, pdfLoaded, zoomLevel, renderingPage],
+  )
+
+  // Stable render effect
   useEffect(() => {
-    if (pdfLoaded && currentPage && (window as any).currentPdfDoc && canvasRef.current) {
-      const timeoutId = setTimeout(() => {
-        renderPdfPage(currentPage)
-      }, 50) // Reduced timeout for faster rendering
-      return () => clearTimeout(timeoutId)
-    }
-  }, [pdfLoaded, currentPage, zoomLevel, selectedTool]) // Added selectedTool as dependency
+    if (pdfLoaded && currentPage && pdfDocRef.current && canvasRef.current && !renderingPage) {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+      }
 
-  const forceRenderPDF = () => {
-    if (pdfLoaded && currentPage && (window as any).currentPdfDoc) {
-      setTimeout(() => {
+      renderTimeoutRef.current = setTimeout(() => {
         renderPdfPage(currentPage)
       }, 100)
     }
-  }
 
-  const addAnnotation = (annotation: Omit<Annotation, "id">) => {
+    return () => {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+        renderTimeoutRef.current = null
+      }
+    }
+  }, [pdfLoaded, currentPage, zoomLevel, renderPdfPage, renderingPage])
+
+  const forceRenderPDF = useCallback(() => {
+    if (pdfLoaded && currentPage && pdfDocRef.current && !renderingPage) {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+      }
+      renderTimeoutRef.current = setTimeout(() => {
+        renderPdfPage(currentPage)
+      }, 50)
+    }
+  }, [pdfLoaded, currentPage, renderPdfPage, renderingPage])
+
+  const addAnnotation = useCallback((annotation: Omit<Annotation, "id">) => {
     const newAnnotation: Annotation = {
       ...annotation,
       id: Date.now().toString() + Math.random(),
     }
     setAnnotations((prev) => [...prev, newAnnotation])
-  }
+  }, [])
 
-  const removeAnnotation = (annotationId: string) => {
+  const removeAnnotation = useCallback((annotationId: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== annotationId))
-  }
+  }, [])
 
   const updateAnnotation = (id: string, updates: Partial<Annotation>) => {
     setAnnotations((prev) => prev.map((ann) => (ann.id === id ? { ...ann, ...updates } : ann)))
   }
 
   // Process files function with actual editing
-  const processWithTool = async (operation: string) => {
-    if (!selectedFile) {
-      toast({
-        title: "No file selected",
-        description: "Please select a file first.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    // For merge operation, we need multiple files
-    if (operation === "merge") {
-      toast({
-        title: "Merge requires multiple files",
-        description: "Please select multiple files for merge operation.",
-        variant: "destructive",
-      })
-      return
-    }
-
-    setCurrentOperation(operation)
-    setIsLoading(true)
-
-    try {
-      const newOperation: FileOperation = {
-        id: Date.now().toString(),
-        fileName: selectedFile.file.name,
-        operation,
-        status: "processing",
-        progress: 0,
-        createdAt: new Date(),
-        fileSize: selectedFile.file.size,
-        outputFileName: generateOutputFileName(selectedFile.file.name, operation),
+  const processWithTool = useCallback(
+    async (operation: string) => {
+      if (!selectedFile) {
+        toast({
+          title: "No file selected",
+          description: "Please select a file first.",
+          variant: "destructive",
+        })
+        return
       }
 
-      setFileOperations((prev) => [newOperation, ...prev])
-
-      // Simulate processing with progress
-      const steps = 10
-      for (let i = 0; i <= steps; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        const progress = (i / steps) * 100
-        setFileOperations((prev) => prev.map((op) => (op.id === newOperation.id ? { ...op, progress } : op)))
+      // For merge operation, we need multiple files
+      if (operation === "merge") {
+        toast({
+          title: "Merge requires multiple files",
+          description: "Please select multiple files for merge operation.",
+          variant: "destructive",
+        })
+        return
       }
 
-      setFileOperations((prev) =>
-        prev.map((op) =>
-          op.id === newOperation.id
-            ? {
-                ...op,
-                status: "completed",
-                progress: 100,
-                downloadUrl: `#download-${newOperation.id}`,
-              }
-            : op,
-        ),
-      )
+      setCurrentOperation(operation)
+      setIsLoading(true)
 
-      toast({
-        title: `${operation} completed!`,
-        description: `Your file has been processed successfully.`,
-      })
-    } catch (error) {
-      toast({
-        title: "Processing failed",
-        description: "There was an error processing your file.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsLoading(false)
-      setCurrentOperation("")
-    }
-  }
+      try {
+        const newOperation: FileOperation = {
+          id: Date.now().toString(),
+          fileName: selectedFile.file.name,
+          operation,
+          status: "processing",
+          progress: 0,
+          createdAt: new Date(),
+          fileSize: selectedFile.file.size,
+          outputFileName: generateOutputFileName(selectedFile.file.name, operation),
+        }
 
-  const generateOutputFileName = (originalName: string, operation: string): string => {
+        setFileOperations((prev) => [newOperation, ...prev])
+
+        // Simulate processing with progress
+        const steps = 10
+        for (let i = 0; i <= steps; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 200))
+          const progress = (i / steps) * 100
+          setFileOperations((prev) => prev.map((op) => (op.id === newOperation.id ? { ...op, progress } : op)))
+        }
+
+        setFileOperations((prev) =>
+          prev.map((op) =>
+            op.id === newOperation.id
+              ? {
+                  ...op,
+                  status: "completed",
+                  progress: 100,
+                  downloadUrl: `#download-${newOperation.id}`,
+                }
+              : op,
+          ),
+        )
+
+        toast({
+          title: `${operation} completed!`,
+          description: `Your file has been processed successfully.`,
+        })
+      } catch (error) {
+        toast({
+          title: "Processing failed",
+          description: "There was an error processing your file.",
+          variant: "destructive",
+        })
+      } finally {
+        setIsLoading(false)
+        setCurrentOperation("")
+      }
+    },
+    [selectedFile, toast],
+  )
+
+  const generateOutputFileName = useCallback((originalName: string, operation: string): string => {
     const nameWithoutExt = originalName.replace(/\.[^/.]+$/, "")
     const ext = originalName.split(".").pop()
 
@@ -608,22 +751,25 @@ export default function PDFEditorPlatform() {
       default:
         return `${nameWithoutExt}_${operation}.${ext}`
     }
-  }
+  }, [])
 
-  const downloadFile = (operation: FileOperation) => {
-    toast({
-      title: "Download started",
-      description: `Downloading ${operation.outputFileName}...`,
-    })
+  const downloadFile = useCallback(
+    (operation: FileOperation) => {
+      toast({
+        title: "Download started",
+        description: `Downloading ${operation.outputFileName}...`,
+      })
 
-    // Simulate download
-    const link = document.createElement("a")
-    link.href = "#"
-    link.download = operation.outputFileName || operation.fileName
-    link.click()
-  }
+      // Simulate download
+      const link = document.createElement("a")
+      link.href = "#"
+      link.download = operation.outputFileName || operation.fileName
+      link.click()
+    },
+    [toast],
+  )
 
-  const savePDF = () => {
+  const savePDF = useCallback(() => {
     if (!currentEditingFile) return
 
     setIsLoading(true)
@@ -648,7 +794,7 @@ export default function PDFEditorPlatform() {
         description: "Your edited PDF is ready for download.",
       })
     }, 1000)
-  }
+  }, [currentEditingFile, toast])
 
   // Header Component
   const Header = () => (
@@ -703,136 +849,142 @@ export default function PDFEditorPlatform() {
     const currentPageData = pdfPages.find((p) => p.pageNumber === currentPage)
     const pageAnnotations = annotations.filter((a) => a.page === currentPage)
 
-    const handleCanvasMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-      e.preventDefault()
-      e.stopPropagation()
+    const handleCanvasMouseDown = useCallback(
+      (e: React.MouseEvent<HTMLDivElement>) => {
+        e.preventDefault()
+        e.stopPropagation()
 
-      if (selectedTool === "select") return
+        if (selectedTool === "select") return
 
-      const rect = e.currentTarget.getBoundingClientRect()
-      const x = e.clientX - rect.left
-      const y = e.clientY - rect.top
+        const rect = e.currentTarget.getBoundingClientRect()
+        const x = e.clientX - rect.left
+        const y = e.clientY - rect.top
 
-      setStartPos({ x, y })
-      setIsDrawing(true)
+        setStartPos({ x, y })
+        setIsDrawing(true)
 
-      if (selectedTool === "text") {
-        const text = prompt("Enter text:")
-        if (text && text.trim()) {
-          addAnnotation({
-            type: "text",
-            x,
-            y,
-            width: text.length * (fontSize * 0.6),
-            height: fontSize + 4,
-            text,
-            color: selectedColor,
-            fontSize,
-            page: currentPage,
+        if (selectedTool === "text") {
+          const text = prompt("Enter text:")
+          if (text && text.trim()) {
+            addAnnotation({
+              type: "text",
+              x,
+              y,
+              width: text.length * (fontSize * 0.6),
+              height: fontSize + 4,
+              text,
+              color: selectedColor,
+              fontSize,
+              page: currentPage,
+            })
+          }
+          setIsDrawing(false)
+        } else if (selectedTool === "editText") {
+          // Check if clicked on a text item with better hit detection
+          const textItems = currentPageData?.textItems || []
+          const clickedItem = textItems.find((item) => {
+            const scale = zoomLevel / 100
+            const padding = 5 // Add some padding for easier clicking
+            return (
+              x >= item.x * scale - padding &&
+              x <= (item.x + item.width) * scale + padding &&
+              y >= item.y * scale - padding &&
+              y <= (item.y + item.height) * scale + padding
+            )
           })
-        }
-        setIsDrawing(false)
-      } else if (selectedTool === "editText") {
-        // Check if clicked on a text item with better hit detection
-        const textItems = currentPageData?.textItems || []
-        const clickedItem = textItems.find((item) => {
-          const scale = zoomLevel / 100
-          const padding = 5 // Add some padding for easier clicking
-          return (
-            x >= item.x * scale - padding &&
-            x <= (item.x + item.width) * scale + padding &&
-            y >= item.y * scale - padding &&
-            y <= (item.y + item.height) * scale + padding
-          )
-        })
 
-        if (clickedItem) {
-          setSelectedTextItem(clickedItem)
+          if (clickedItem) {
+            setSelectedTextItem(clickedItem)
 
-          // Create an edit text annotation
-          const editAnnotation: Annotation = {
-            id: "edit-" + Date.now().toString(),
-            type: "editText",
-            x: clickedItem.x * (zoomLevel / 100),
-            y: clickedItem.y * (zoomLevel / 100),
-            width: clickedItem.width * (zoomLevel / 100),
-            height: clickedItem.height * (zoomLevel / 100),
-            text: clickedItem.text,
-            originalText: clickedItem.text,
-            color: selectedColor,
-            fontSize: clickedItem.fontSize,
-            page: currentPage,
+            // Create an edit text annotation
+            const editAnnotation: Annotation = {
+              id: "edit-" + Date.now().toString(),
+              type: "editText",
+              x: clickedItem.x * (zoomLevel / 100),
+              y: clickedItem.y * (zoomLevel / 100),
+              width: clickedItem.width * (zoomLevel / 100),
+              height: clickedItem.height * (zoomLevel / 100),
+              text: clickedItem.text,
+              originalText: clickedItem.text,
+              color: selectedColor,
+              fontSize: clickedItem.fontSize,
+              page: currentPage,
+            }
+
+            setEditingTextAnnotation(editAnnotation)
+            setTextEditMode(true)
+
+            // Focus the text edit area after it's rendered
+            setTimeout(() => {
+              if (textEditRef.current) {
+                textEditRef.current.focus()
+                textEditRef.current.select()
+              }
+            }, 100)
           }
 
-          setEditingTextAnnotation(editAnnotation)
-          setTextEditMode(true)
-
-          // Focus the text edit area after it's rendered
-          setTimeout(() => {
-            if (textEditRef.current) {
-              textEditRef.current.focus()
-              textEditRef.current.select()
-            }
-          }, 100)
+          setIsDrawing(false)
+        } else if (["highlight", "rectangle", "circle", "underline", "strikethrough"].includes(selectedTool)) {
+          const newAnnotation: Annotation = {
+            id: "temp-" + Date.now().toString(),
+            type: selectedTool as any,
+            x,
+            y,
+            width: 0,
+            height: 0,
+            color: selectedColor,
+            page: currentPage,
+          }
+          setDrawingAnnotation(newAnnotation)
+        } else if (selectedTool === "freehand") {
+          addAnnotation({
+            type: "freehand",
+            x,
+            y,
+            width: 3,
+            height: 3,
+            color: selectedColor,
+            page: currentPage,
+            points: [{ x, y }],
+          })
         }
+      },
+      [selectedTool, currentPageData, zoomLevel, selectedColor, fontSize, currentPage, addAnnotation],
+    )
 
-        setIsDrawing(false)
-      } else if (["highlight", "rectangle", "circle", "underline", "strikethrough"].includes(selectedTool)) {
-        const newAnnotation: Annotation = {
-          id: "temp-" + Date.now().toString(),
-          type: selectedTool as any,
-          x,
-          y,
-          width: 0,
-          height: 0,
-          color: selectedColor,
-          page: currentPage,
+    const handleCanvasMouseMove = useCallback(
+      (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!isDrawing || selectedTool === "select" || selectedTool === "text" || selectedTool === "editText") return
+
+        const rect = e.currentTarget.getBoundingClientRect()
+        const currentX = e.clientX - rect.left
+        const currentY = e.clientY - rect.top
+
+        if (selectedTool === "freehand") {
+          addAnnotation({
+            type: "freehand",
+            x: currentX,
+            y: currentY,
+            width: 2,
+            height: 2,
+            color: selectedColor,
+            page: currentPage,
+            points: [{ x: currentX, y: currentY }],
+          })
+        } else if (drawingAnnotation) {
+          setDrawingAnnotation({
+            ...drawingAnnotation,
+            width: Math.abs(currentX - startPos.x),
+            height: Math.abs(currentY - startPos.y),
+            x: Math.min(startPos.x, currentX),
+            y: Math.min(startPos.y, currentY),
+          })
         }
-        setDrawingAnnotation(newAnnotation)
-      } else if (selectedTool === "freehand") {
-        addAnnotation({
-          type: "freehand",
-          x,
-          y,
-          width: 3,
-          height: 3,
-          color: selectedColor,
-          page: currentPage,
-          points: [{ x, y }],
-        })
-      }
-    }
+      },
+      [isDrawing, selectedTool, selectedColor, currentPage, addAnnotation, drawingAnnotation, startPos],
+    )
 
-    const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isDrawing || selectedTool === "select" || selectedTool === "text" || selectedTool === "editText") return
-
-      const rect = e.currentTarget.getBoundingClientRect()
-      const currentX = e.clientX - rect.left
-      const currentY = e.clientY - rect.top
-
-      if (selectedTool === "freehand") {
-        addAnnotation({
-          type: "freehand",
-          x: currentX,
-          y: currentY,
-          width: 2,
-          height: 2,
-          color: selectedColor,
-          page: currentPage,
-          points: [{ x: currentX, y: currentY }],
-        })
-      } else if (drawingAnnotation) {
-        setDrawingAnnotation({
-          ...drawingAnnotation,
-          width: Math.abs(currentX - startPos.x),
-          height: Math.abs(currentY - startPos.y),
-          x: Math.min(startPos.x, currentX),
-          y: Math.min(startPos.y, currentY),
-        })
-      }
-    }
-
-    const handleCanvasMouseUp = () => {
+    const handleCanvasMouseUp = useCallback(() => {
       if (!isDrawing) return
 
       setIsDrawing(false)
@@ -851,9 +1003,9 @@ export default function PDFEditorPlatform() {
         }
         setDrawingAnnotation(null)
       }
-    }
+    }, [isDrawing, drawingAnnotation, currentPage, addAnnotation])
 
-    const handleTextEditSave = () => {
+    const handleTextEditSave = useCallback(() => {
       if (editingTextAnnotation && textEditRef.current) {
         const newText = textEditRef.current.value
 
@@ -875,13 +1027,13 @@ export default function PDFEditorPlatform() {
         setTextEditMode(false)
         setSelectedTextItem(null)
       }
-    }
+    }, [editingTextAnnotation, selectedColor, fontSize, currentPage, addAnnotation])
 
-    const handleTextEditCancel = () => {
+    const handleTextEditCancel = useCallback(() => {
       setEditingTextAnnotation(null)
       setTextEditMode(false)
       setSelectedTextItem(null)
-    }
+    }, [])
 
     return (
       <div className="container py-4">
@@ -1257,6 +1409,7 @@ export default function PDFEditorPlatform() {
                     <div className="text-center">
                       <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
                       <p>Loading PDF...</p>
+                      {!pdfLibLoaded && <p className="text-sm text-gray-500 mt-2">Loading PDF library...</p>}
                     </div>
                   </div>
                 ) : (
