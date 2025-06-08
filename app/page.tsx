@@ -591,11 +591,11 @@ export default function PDFEditorPlatform() {
         context.clearRect(0, 0, canvas.width, canvas.height)
 
         // Apply rotation if needed
-        const viewport = page.getViewport({ 
+        const viewport = page.getViewport({
           scale: zoomLevel / 100,
-          rotation: pageRotation
+          rotation: pageRotation,
         })
-        
+
         canvas.width = viewport.width
         canvas.height = viewport.height
         canvas.style.width = viewport.width + "px"
@@ -1481,9 +1481,9 @@ export default function PDFEditorPlatform() {
                 <div>
                   <h4 className="font-medium">Error</h4>
                   <p className="text-sm">{errorMessage}</p>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
                     className="mt-2 text-red-800 dark:text-red-200 border-red-300 dark:border-red-700 hover:bg-red-100 dark:hover:bg-red-800/30"
                     onClick={() => setErrorMessage(null)}
                   >
@@ -1726,5 +1726,98 @@ export default function PDFEditorPlatform() {
                                 }}
                               />
                             )}
+                          </div>
+                        ))}
 
-                            { /* Delete button on
+                        {/* Drawing annotation preview */}
+                        {drawingAnnotation && (
+                          <div
+                            className="absolute border-2 border-dashed"
+                            style={{
+                              left: drawingAnnotation.x,
+                              top: drawingAnnotation.y,
+                              width: drawingAnnotation.width,
+                              height: drawingAnnotation.height,
+                              borderColor: drawingAnnotation.color,
+                              pointerEvents: "none",
+                            }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="flex items-center justify-center h-full w-full">
+                  <div className="text-center">
+                    <FileText className="mx-auto h-16 w-16 text-gray-400 mb-4" />
+                    <h3 className="text-xl font-medium mb-2">File Preview</h3>
+                    <p className="text-gray-500">
+                      {selectedFile.file.name} - {selectedFile.file.type}
+                    </p>
+                    <p className="text-sm text-gray-400 mt-2">Use the tools on the left to process this file</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* File Operations History */}
+        {fileOperations.length > 0 && (
+          <div className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Operations</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3 max-h-60 overflow-y-auto">
+                  {fileOperations.slice(0, 5).map((operation) => (
+                    <div
+                      key={operation.id}
+                      className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
+                    >
+                      <div className="flex items-center space-x-3">
+                        <div className="flex-1">
+                          <p className="font-medium text-sm">{operation.fileName}</p>
+                          <p className="text-xs text-gray-500 capitalize">{operation.operation}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        {operation.status === "processing" && (
+                          <div className="flex items-center space-x-2">
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                            <span className="text-sm">{operation.progress}%</span>
+                          </div>
+                        )}
+                        {operation.status === "completed" && (
+                          <Button size="sm" onClick={() => downloadFile(operation)} className="text-xs">
+                            Download
+                          </Button>
+                        )}
+                        {operation.status === "failed" && (
+                          <Badge variant="destructive" className="text-xs">
+                            Failed
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className={`min-h-screen ${darkMode ? "dark" : ""}`}>
+      <Header />
+      <main>
+        <PDFEditorWithTools />
+      </main>
+    </div>
+  )
+}
