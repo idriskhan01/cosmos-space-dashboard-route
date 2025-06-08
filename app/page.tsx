@@ -338,6 +338,12 @@ export default function PDFEditorPlatform() {
       const canvas = canvasRef.current
       if (!canvas) return
 
+      const context = canvas.getContext("2d")
+      if (!context) return
+
+      // Clear the canvas first
+      context.clearRect(0, 0, canvas.width, canvas.height)
+
       const viewport = page.getViewport({ scale: zoomLevel / 100 })
       canvas.width = viewport.width
       canvas.height = viewport.height
@@ -345,24 +351,39 @@ export default function PDFEditorPlatform() {
       canvas.style.height = viewport.height + "px"
 
       const renderContext = {
-        canvasContext: canvas.getContext("2d"),
+        canvasContext: context,
         viewport: viewport,
       }
 
       await page.render(renderContext).promise
+      console.log(`PDF page ${pageNumber} rendered successfully`)
     } catch (error) {
       console.error("Error rendering PDF page:", error)
+      // Retry rendering after a short delay
+      setTimeout(() => {
+        if (pdfLoaded && (window as any).currentPdfDoc) {
+          renderPdfPage(pageNumber)
+        }
+      }, 500)
     }
   }
 
   useEffect(() => {
-    if (pdfLoaded && currentPage && (window as any).currentPdfDoc) {
+    if (pdfLoaded && currentPage && (window as any).currentPdfDoc && canvasRef.current) {
       const timeoutId = setTimeout(() => {
         renderPdfPage(currentPage)
-      }, 100)
+      }, 50) // Reduced timeout for faster rendering
       return () => clearTimeout(timeoutId)
     }
-  }, [pdfLoaded, currentPage, zoomLevel, currentEditingFile])
+  }, [pdfLoaded, currentPage, zoomLevel, selectedTool]) // Added selectedTool as dependency
+
+  const forceRenderPDF = () => {
+    if (pdfLoaded && currentPage && (window as any).currentPdfDoc) {
+      setTimeout(() => {
+        renderPdfPage(currentPage)
+      }, 100)
+    }
+  }
 
   const addAnnotation = (annotation: Omit<Annotation, "id">) => {
     const newAnnotation: Annotation = {
@@ -849,56 +870,80 @@ export default function PDFEditorPlatform() {
                     <Button
                       variant={selectedTool === "select" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("select")}
+                      onClick={() => {
+                        setSelectedTool("select")
+                        forceRenderPDF()
+                      }}
                     >
                       <MousePointer className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "text" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("text")}
+                      onClick={() => {
+                        setSelectedTool("text")
+                        forceRenderPDF()
+                      }}
                     >
                       <Type className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "highlight" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("highlight")}
+                      onClick={() => {
+                        setSelectedTool("highlight")
+                        forceRenderPDF()
+                      }}
                     >
                       <Highlighter className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "rectangle" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("rectangle")}
+                      onClick={() => {
+                        setSelectedTool("rectangle")
+                        forceRenderPDF()
+                      }}
                     >
                       <Square className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "circle" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("circle")}
+                      onClick={() => {
+                        setSelectedTool("circle")
+                        forceRenderPDF()
+                      }}
                     >
                       <Circle className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "freehand" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("freehand")}
+                      onClick={() => {
+                        setSelectedTool("freehand")
+                        forceRenderPDF()
+                      }}
                     >
                       <PenTool className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "underline" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("underline")}
+                      onClick={() => {
+                        setSelectedTool("underline")
+                        forceRenderPDF()
+                      }}
                     >
                       <Minus className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "strikethrough" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("strikethrough")}
+                      onClick={() => {
+                        setSelectedTool("strikethrough")
+                        forceRenderPDF()
+                      }}
                     >
                       <X className="h-4 w-4" />
                     </Button>
@@ -937,6 +982,7 @@ export default function PDFEditorPlatform() {
                     <Label>Zoom: {zoomLevel}%</Label>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={() => setZoomLevel(Math.max(25, zoomLevel - 25))}>
+                        utton variant="outline" size="sm" onClick={() => setZoomLevel(Math.max(25, zoomLevel - 25))}>
                         <ZoomOut className="h-4 w-4" />
                       </Button>
                       <Button variant="outline" size="sm" onClick={() => setZoomLevel(100)}>
@@ -970,7 +1016,10 @@ export default function PDFEditorPlatform() {
                         variant={currentPage === page.pageNumber ? "default" : "outline"}
                         size="sm"
                         className="w-full justify-start"
-                        onClick={() => setCurrentPage(page.pageNumber)}
+                        onClick={() => {
+                          setCurrentPage(page.pageNumber)
+                          forceRenderPDF()
+                        }}
                       >
                         Page {page.pageNumber}
                         {annotations.filter((a) => a.page === page.pageNumber).length > 0 && (
