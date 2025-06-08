@@ -121,16 +121,12 @@ export default function PDFEditorPlatform() {
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [selectedColor, setSelectedColor] = useState("#ff0000")
   const [fontSize, setFontSize] = useState(16)
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 })
+  const [pdfLoaded, setPdfLoaded] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const pdfContainerRef = useRef<HTMLDivElement>(null)
   const { toast } = useToast()
-  const [isSignUp, setIsSignUp] = useState(false)
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    password: "",
-    confirmPassword: "",
-  })
 
   useEffect(() => {
     // Check for saved user session
@@ -231,6 +227,9 @@ export default function PDFEditorPlatform() {
         const reader = new FileReader()
         reader.onload = (e) => resolve(e.target?.result as string)
         reader.readAsDataURL(file)
+      } else if (file.type === "application/pdf") {
+        // For PDFs, we'll create a thumbnail later
+        resolve("/placeholder.svg?height=100&width=100")
       } else {
         resolve("")
       }
@@ -274,8 +273,11 @@ export default function PDFEditorPlatform() {
   // PDF Editor Functions
   const openPDFEditor = (file: SelectedFile) => {
     setCurrentEditingFile(file)
+    setPdfLoaded(false)
+
     // Initialize PDF pages (simulated)
-    const pages: PDFPage[] = Array.from({ length: 5 }, (_, i) => ({
+    const pageCount = 5 // We'll simulate 5 pages
+    const pages: PDFPage[] = Array.from({ length: pageCount }, (_, i) => ({
       id: `page-${i + 1}`,
       pageNumber: i + 1,
       width: 595,
@@ -283,10 +285,16 @@ export default function PDFEditorPlatform() {
       rotation: 0,
       annotations: [],
     }))
+
     setPdfPages(pages)
     setCurrentPage(1)
     setAnnotations([])
     navigateTo("pdf-editor")
+
+    // Simulate PDF loading
+    setTimeout(() => {
+      setPdfLoaded(true)
+    }, 1000)
   }
 
   const addAnnotation = (annotation: Omit<Annotation, "id">) => {
@@ -325,6 +333,9 @@ export default function PDFEditorPlatform() {
         title: "PDF saved successfully!",
         description: "Your edited PDF is ready for download.",
       })
+
+      // Navigate back to tools after saving
+      navigateTo("tools")
     }, 2000)
   }
 
@@ -334,6 +345,16 @@ export default function PDFEditorPlatform() {
       toast({
         title: "No files selected",
         description: "Please select files to process.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Only require multiple files for merge operation
+    if (operation === "merge" && selectedFiles.length < 2) {
+      toast({
+        title: "Multiple files required",
+        description: "Please select at least 2 files to merge.",
         variant: "destructive",
       })
       return
@@ -520,9 +541,6 @@ export default function PDFEditorPlatform() {
 
   // PDF Editor Component
   const PDFEditor = () => {
-    const [isDrawing, setIsDrawing] = useState(false)
-    const [startPos, setStartPos] = useState({ x: 0, y: 0 })
-
     if (!currentEditingFile) {
       navigateTo("tools")
       return null
@@ -622,6 +640,178 @@ export default function PDFEditorPlatform() {
 
     const handleMouseUp = () => {
       setIsDrawing(false)
+    }
+
+    // PDF content for each page
+    const getPdfContent = (pageNumber: number) => {
+      switch (pageNumber) {
+        case 1:
+          return (
+            <>
+              <div className="mb-6">
+                <h1 className="text-3xl font-bold mb-4 text-gray-900">{currentEditingFile.file.name}</h1>
+                <div className="w-16 h-1 bg-blue-600 mb-6"></div>
+              </div>
+
+              <div className="space-y-4 text-gray-700 leading-relaxed">
+                <p className="text-lg">
+                  <strong>
+                    Page {currentPage} of {pdfPages.length}
+                  </strong>
+                </p>
+
+                <p>
+                  This is a preview of your PDF document. You can add various types of annotations using the tools in
+                  the left panel.
+                </p>
+
+                <div className="bg-gray-50 p-4 rounded border-l-4 border-blue-500">
+                  <h3 className="font-semibold mb-2">Available Tools:</h3>
+                  <ul className="list-disc list-inside space-y-1 text-sm">
+                    <li>Text Tool - Click anywhere to add text</li>
+                    <li>Highlight Tool - Add colored highlights</li>
+                    <li>Rectangle Tool - Draw rectangular shapes</li>
+                    <li>Circle Tool - Draw circular shapes</li>
+                    <li>Freehand Tool - Draw freely with your mouse</li>
+                  </ul>
+                </div>
+
+                <p>
+                  Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et
+                  dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+                </p>
+              </div>
+            </>
+          )
+        case 2:
+          return (
+            <>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 1: Introduction</h2>
+                <div className="w-16 h-1 bg-green-600 mb-6"></div>
+              </div>
+
+              <div className="space-y-4 text-gray-700 leading-relaxed">
+                <p>
+                  This is page {pageNumber} of your document. Each page can have different content and independent
+                  annotations.
+                </p>
+
+                <p>
+                  Nulla facilisi. Maecenas nec justo vitae nisi pharetra euismod. Cras bibendum erat ut sapien
+                  condimentum, vel ultricies nunc ultricies. Proin auctor aliquam dolor, in mollis tellus tempor vel.
+                </p>
+
+                <div className="bg-green-50 p-4 rounded">
+                  <h4 className="font-semibold mb-2">Important Note</h4>
+                  <p>All annotations you add will be saved with the document when you click the "Save PDF" button.</p>
+                </div>
+
+                <p>
+                  Vestibulum ante ipsum primis in faucibus orci luctus et ultrices posuere cubilia curae; Sed at tortor
+                  at tortor finibus lobortis eget eu magna. Mauris vel convallis eros.
+                </p>
+              </div>
+            </>
+          )
+        case 3:
+          return (
+            <>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 2: Methods</h2>
+                <div className="w-16 h-1 bg-purple-600 mb-6"></div>
+              </div>
+
+              <div className="space-y-4 text-gray-700 leading-relaxed">
+                <p>
+                  This is page {pageNumber} of your document. You can navigate between pages using the page buttons in
+                  the left panel.
+                </p>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-gray-50 p-3 rounded">
+                    <h4 className="font-semibold">Method 1</h4>
+                    <p className="text-sm">Detailed description of the first method</p>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded">
+                    <h4 className="font-semibold">Method 2</h4>
+                    <p className="text-sm">Detailed description of the second method</p>
+                  </div>
+                </div>
+
+                <p>
+                  Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Sed
+                  euismod, urna eu tincidunt consectetur, nisi nisl aliquam nunc, eget aliquam nisl nunc sit amet nisl.
+                </p>
+              </div>
+            </>
+          )
+        case 4:
+          return (
+            <>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 3: Results</h2>
+                <div className="w-16 h-1 bg-amber-600 mb-6"></div>
+              </div>
+
+              <div className="space-y-4 text-gray-700 leading-relaxed">
+                <p>This is page {pageNumber} of your document. You can add annotations to any page.</p>
+
+                <div className="bg-amber-50 p-4 rounded border border-amber-200">
+                  <h4 className="font-semibold mb-2">Results Summary</h4>
+                  <ul className="list-disc list-inside space-y-1">
+                    <li>Finding 1: Lorem ipsum dolor sit amet</li>
+                    <li>Finding 2: Consectetur adipiscing elit</li>
+                    <li>Finding 3: Sed do eiusmod tempor incididunt</li>
+                  </ul>
+                </div>
+
+                <p>
+                  Donec euismod, nisl eget ultricies ultricies, nisl nisl aliquam nisl, eget aliquam nisl nunc sit amet
+                  nisl. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas.
+                </p>
+              </div>
+            </>
+          )
+        case 5:
+          return (
+            <>
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900">Section 4: Conclusion</h2>
+                <div className="w-16 h-1 bg-red-600 mb-6"></div>
+              </div>
+
+              <div className="space-y-4 text-gray-700 leading-relaxed">
+                <p>
+                  This is the final page of your document. You can save your edited PDF using the "Save PDF" button.
+                </p>
+
+                <div className="bg-red-50 p-4 rounded">
+                  <h4 className="font-semibold mb-2">Conclusion</h4>
+                  <p>
+                    In conclusion, this document demonstrates the PDF editing capabilities of PDFPro. You can add text,
+                    highlights, shapes, and freehand drawings to any page.
+                  </p>
+                </div>
+
+                <p>
+                  Thank you for using PDFPro! If you have any questions or feedback, please contact our support team.
+                </p>
+              </div>
+            </>
+          )
+        default:
+          return (
+            <div className="space-y-4 text-gray-700 leading-relaxed">
+              <p className="text-lg">
+                <strong>
+                  Page {currentPage} of {pdfPages.length}
+                </strong>
+              </p>
+              <p>This is additional content for page {pageNumber}.</p>
+            </div>
+          )
+      }
     }
 
     return (
@@ -755,184 +945,142 @@ export default function PDFEditorPlatform() {
           {/* PDF Viewer */}
           <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-auto">
             <div className="p-4 flex justify-center">
-              <div
-                className="bg-white shadow-2xl border relative"
-                style={{
-                  width: `${(currentPageData?.width || 595) * (zoomLevel / 100)}px`,
-                  height: `${(currentPageData?.height || 842) * (zoomLevel / 100)}px`,
-                  transform: `scale(1)`,
-                  transformOrigin: "top left",
-                }}
-              >
-                {/* PDF Content Background */}
-                <div
-                  className="absolute inset-0 p-8 text-gray-800 select-none pointer-events-none"
-                  style={{ fontSize: `${12 * (zoomLevel / 100)}px` }}
-                >
-                  <div className="mb-6">
-                    <h1 className="text-3xl font-bold mb-4 text-gray-900">Sample PDF Document</h1>
-                    <div className="w-16 h-1 bg-blue-600 mb-6"></div>
-                  </div>
-
-                  <div className="space-y-4 text-gray-700 leading-relaxed">
-                    <p className="text-lg">
-                      <strong>
-                        Page {currentPage} of {pdfPages.length}
-                      </strong>
-                    </p>
-
-                    <p>
-                      This is a sample PDF document that demonstrates the editing capabilities of PDFPro. You can add
-                      various types of annotations using the tools in the left panel.
-                    </p>
-
-                    <div className="bg-gray-50 p-4 rounded border-l-4 border-blue-500">
-                      <h3 className="font-semibold mb-2">Available Tools:</h3>
-                      <ul className="list-disc list-inside space-y-1 text-sm">
-                        <li>Text Tool - Click anywhere to add text</li>
-                        <li>Highlight Tool - Add colored highlights</li>
-                        <li>Rectangle Tool - Draw rectangular shapes</li>
-                        <li>Circle Tool - Draw circular shapes</li>
-                        <li>Freehand Tool - Draw freely with your mouse</li>
-                      </ul>
-                    </div>
-
-                    <p>
-                      Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut
-                      labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
-                    </p>
-
-                    <div className="grid grid-cols-2 gap-4 mt-6">
-                      <div className="bg-blue-50 p-3 rounded">
-                        <h4 className="font-semibold text-blue-800">Feature 1</h4>
-                        <p className="text-sm text-blue-600">Professional editing tools</p>
-                      </div>
-                      <div className="bg-green-50 p-3 rounded">
-                        <h4 className="font-semibold text-green-800">Feature 2</h4>
-                        <p className="text-sm text-green-600">Real-time collaboration</p>
-                      </div>
-                    </div>
-
-                    {currentPage > 1 && (
-                      <div className="mt-8 p-4 bg-yellow-50 rounded">
-                        <p className="text-yellow-800">
-                          This is additional content on page {currentPage}. Each page can have different content and
-                          independent annotations.
-                        </p>
-                      </div>
-                    )}
+              {!pdfLoaded ? (
+                <div className="flex items-center justify-center h-full w-full">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    <p>Loading PDF...</p>
                   </div>
                 </div>
-
-                {/* Annotations Layer */}
-                {pageAnnotations.map((annotation) => (
+              ) : (
+                <div
+                  ref={pdfContainerRef}
+                  className="bg-white shadow-2xl border relative"
+                  style={{
+                    width: `${(currentPageData?.width || 595) * (zoomLevel / 100)}px`,
+                    height: `${(currentPageData?.height || 842) * (zoomLevel / 100)}px`,
+                    transform: `scale(1)`,
+                    transformOrigin: "top left",
+                  }}
+                >
+                  {/* PDF Content Background */}
                   <div
-                    key={annotation.id}
-                    className="absolute cursor-pointer group"
-                    style={{
-                      left: annotation.x * (zoomLevel / 100),
-                      top: annotation.y * (zoomLevel / 100),
-                      width: (annotation.width || 100) * (zoomLevel / 100),
-                      height: (annotation.height || 20) * (zoomLevel / 100),
-                      fontSize: (annotation.fontSize || 16) * (zoomLevel / 100),
-                      color: annotation.color,
-                      zIndex: 10,
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (confirm("Remove this annotation?")) {
-                        removeAnnotation(annotation.id)
-                      }
-                    }}
+                    className="absolute inset-0 p-8 text-gray-800 select-none pointer-events-none"
+                    style={{ fontSize: `${12 * (zoomLevel / 100)}px` }}
                   >
-                    {annotation.type === "text" && (
-                      <div
-                        className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
-                        style={{ color: annotation.color }}
-                      >
-                        {annotation.text}
-                      </div>
-                    )}
+                    {getPdfContent(currentPage)}
+                  </div>
 
-                    {annotation.type === "highlight" && (
-                      <div
-                        className="opacity-40 rounded"
-                        style={{
-                          backgroundColor: annotation.color,
-                          width: "100%",
-                          height: "100%",
-                        }}
-                      />
-                    )}
-
-                    {annotation.type === "rectangle" && (
-                      <div
-                        className="border-2 bg-transparent rounded"
-                        style={{
-                          borderColor: annotation.color,
-                          width: "100%",
-                          height: "100%",
-                        }}
-                      />
-                    )}
-
-                    {annotation.type === "circle" && (
-                      <div
-                        className="border-2 bg-transparent rounded-full"
-                        style={{
-                          borderColor: annotation.color,
-                          width: "100%",
-                          height: "100%",
-                        }}
-                      />
-                    )}
-
-                    {annotation.type === "freehand" && (
-                      <div
-                        className="rounded"
-                        style={{
-                          backgroundColor: annotation.color,
-                          width: "100%",
-                          height: "100%",
-                          minWidth: "2px",
-                          minHeight: "2px",
-                        }}
-                      />
-                    )}
-
-                    {/* Delete button on hover */}
-                    <button
-                      className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                  {/* Annotations Layer */}
+                  {pageAnnotations.map((annotation) => (
+                    <div
+                      key={annotation.id}
+                      className="absolute cursor-pointer group"
+                      style={{
+                        left: annotation.x * (zoomLevel / 100),
+                        top: annotation.y * (zoomLevel / 100),
+                        width: (annotation.width || 100) * (zoomLevel / 100),
+                        height: (annotation.height || 20) * (zoomLevel / 100),
+                        fontSize: (annotation.fontSize || 16) * (zoomLevel / 100),
+                        color: annotation.color,
+                        zIndex: 10,
+                      }}
                       onClick={(e) => {
                         e.stopPropagation()
-                        removeAnnotation(annotation.id)
+                        if (confirm("Remove this annotation?")) {
+                          removeAnnotation(annotation.id)
+                        }
                       }}
                     >
-                      ×
-                    </button>
-                  </div>
-                ))}
+                      {annotation.type === "text" && (
+                        <div
+                          className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
+                          style={{ color: annotation.color }}
+                        >
+                          {annotation.text}
+                        </div>
+                      )}
 
-                {/* Interactive Layer */}
-                <div
-                  className="absolute inset-0 z-20"
-                  style={{
-                    cursor:
-                      selectedTool === "select"
-                        ? "default"
-                        : selectedTool === "text"
-                          ? "text"
-                          : selectedTool === "freehand"
-                            ? "crosshair"
-                            : "crosshair",
-                  }}
-                  onClick={handleCanvasClick}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  onMouseLeave={handleMouseUp}
-                />
-              </div>
+                      {annotation.type === "highlight" && (
+                        <div
+                          className="opacity-40 rounded"
+                          style={{
+                            backgroundColor: annotation.color,
+                            width: "100%",
+                            height: "100%",
+                          }}
+                        />
+                      )}
+
+                      {annotation.type === "rectangle" && (
+                        <div
+                          className="border-2 bg-transparent rounded"
+                          style={{
+                            borderColor: annotation.color,
+                            width: "100%",
+                            height: "100%",
+                          }}
+                        />
+                      )}
+
+                      {annotation.type === "circle" && (
+                        <div
+                          className="border-2 bg-transparent rounded-full"
+                          style={{
+                            borderColor: annotation.color,
+                            width: "100%",
+                            height: "100%",
+                          }}
+                        />
+                      )}
+
+                      {annotation.type === "freehand" && (
+                        <div
+                          className="rounded"
+                          style={{
+                            backgroundColor: annotation.color,
+                            width: "100%",
+                            height: "100%",
+                            minWidth: "2px",
+                            minHeight: "2px",
+                          }}
+                        />
+                      )}
+
+                      {/* Delete button on hover */}
+                      <button
+                        className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeAnnotation(annotation.id)
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                  {/* Interactive Layer */}
+                  <div
+                    className="absolute inset-0 z-20"
+                    style={{
+                      cursor:
+                        selectedTool === "select"
+                          ? "default"
+                          : selectedTool === "text"
+                            ? "text"
+                            : selectedTool === "freehand"
+                              ? "crosshair"
+                              : "crosshair",
+                    }}
+                    onClick={handleCanvasClick}
+                    onMouseDown={handleMouseDown}
+                    onMouseMove={handleMouseMove}
+                    onMouseUp={handleMouseUp}
+                    onMouseLeave={handleMouseUp}
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -1131,6 +1279,14 @@ export default function PDFEditorPlatform() {
 
   // Authentication Component
   const AuthPage = () => {
+    const [isSignUp, setIsSignUp] = useState(false)
+    const [formData, setFormData] = useState({
+      name: "",
+      email: "",
+      password: "",
+      confirmPassword: "",
+    })
+
     const handleSubmit = async (e: React.FormEvent) => {
       e.preventDefault()
       setIsLoading(true)
@@ -1389,7 +1545,28 @@ export default function PDFEditorPlatform() {
         <FileUploadArea />
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           <Button
-            onClick={() => processFiles("annotate")}
+            onClick={() => {
+              if (selectedFiles.length === 0) {
+                toast({
+                  title: "No files selected",
+                  description: "Please select a PDF file to annotate.",
+                  variant: "destructive",
+                })
+                return
+              }
+
+              // Find the first PDF file
+              const pdfFile = selectedFiles.find((file) => file.file.type === "application/pdf")
+              if (pdfFile) {
+                openPDFEditor(pdfFile)
+              } else {
+                toast({
+                  title: "No PDF files",
+                  description: "Please select a PDF file to annotate.",
+                  variant: "destructive",
+                })
+              }
+            }}
             className="h-20 flex-col"
             disabled={selectedFiles.length === 0 || isLoading}
           >
