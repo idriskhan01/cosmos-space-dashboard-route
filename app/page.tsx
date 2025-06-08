@@ -159,7 +159,7 @@ export default function PDFEditorPlatform() {
         setHistoryIndex((prev) => prev + 1)
       }
     }
-  }, [annotations.length])
+  }, [annotations, historyIndex])
 
   const undo = () => {
     if (historyIndex > 0) {
@@ -370,7 +370,7 @@ export default function PDFEditorPlatform() {
         const page = await pdf.getPage(i)
         const viewport = page.getViewport({ scale: 1.0 })
 
-        // Extract text content for text editing
+        // Extract text content for text editing with better positioning
         const textContent = await page.getTextContent()
         const textItems: PDFTextItem[] = []
 
@@ -378,15 +378,18 @@ export default function PDFEditorPlatform() {
           if (item.str && item.str.trim()) {
             const transform = item.transform || [1, 0, 0, 1, 0, 0]
             const x = transform[4]
-            const y = transform[5]
-            const width = item.width || item.str.length * (item.fontSize || 12) * 0.6
-            const height = item.height || (item.fontSize || 12) * 1.2
+            const y = viewport.height - transform[5] // Flip y-coordinate
+
+            // Better width calculation based on font metrics
+            const charWidth = (item.fontSize || 12) * 0.6
+            const width = item.width || item.str.length * charWidth
+            const height = (item.fontSize || 12) * 1.2
 
             textItems.push({
               id: `text-${i}-${index}`,
               text: item.str,
               x,
-              y: viewport.height - y, // Flip y-coordinate
+              y,
               width,
               height,
               fontSize: item.fontSize || 12,
@@ -730,15 +733,16 @@ export default function PDFEditorPlatform() {
         }
         setIsDrawing(false)
       } else if (selectedTool === "editText") {
-        // Check if clicked on a text item
+        // Check if clicked on a text item with better hit detection
         const textItems = currentPageData?.textItems || []
         const clickedItem = textItems.find((item) => {
           const scale = zoomLevel / 100
+          const padding = 5 // Add some padding for easier clicking
           return (
-            x >= item.x * scale &&
-            x <= (item.x + item.width) * scale &&
-            y >= item.y * scale &&
-            y <= (item.y + item.height) * scale
+            x >= item.x * scale - padding &&
+            x <= (item.x + item.width) * scale + padding &&
+            y >= item.y * scale - padding &&
+            y <= (item.y + item.height) * scale + padding
           )
         })
 
@@ -1274,7 +1278,7 @@ export default function PDFEditorPlatform() {
                           currentPageData?.textItems?.map((item) => (
                             <div
                               key={item.id}
-                              className="absolute border border-transparent hover:border-blue-400 cursor-text pointer-events-auto"
+                              className="absolute border border-transparent hover:border-blue-400 hover:bg-blue-50 hover:bg-opacity-30 cursor-text pointer-events-auto transition-all"
                               style={{
                                 left: item.x * (zoomLevel / 100),
                                 top: item.y * (zoomLevel / 100),
@@ -1283,6 +1287,7 @@ export default function PDFEditorPlatform() {
                                 fontSize: item.fontSize * (zoomLevel / 100),
                                 fontFamily: item.fontFamily,
                               }}
+                              title={`Click to edit: "${item.text}"`}
                             />
                           ))}
                       </div>
