@@ -327,6 +327,74 @@ export default function PDFEditorPlatform() {
     })
   }, [])
 
+  const renderPdfPage = useCallback(
+    async (pageNumber: number) => {
+      if (!pdfDocRef.current || !canvasRef.current || renderingPage) {
+        return
+      }
+
+      setRenderingPage(true)
+
+      try {
+        const pdf = pdfDocRef.current
+        const page = await pdf.getPage(pageNumber)
+        const canvas = canvasRef.current
+        const context = canvas.getContext("2d")
+
+        if (!context) {
+          console.error("Could not get canvas context")
+          setRenderingPage(false)
+          return
+        }
+
+        // Calculate viewport with proper scaling
+        const scale = zoomLevel / 100
+        const viewport = page.getViewport({
+          scale: scale,
+          rotation: pageRotation,
+        })
+
+        // Set canvas dimensions
+        canvas.width = Math.floor(viewport.width)
+        canvas.height = Math.floor(viewport.height)
+        canvas.style.width = Math.floor(viewport.width) + "px"
+        canvas.style.height = Math.floor(viewport.height) + "px"
+
+        // Clear canvas before rendering
+        context.clearRect(0, 0, canvas.width, canvas.height)
+
+        // Set white background
+        context.fillStyle = "white"
+        context.fillRect(0, 0, canvas.width, canvas.height)
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+          enableWebGL: false, // Disable WebGL for better compatibility
+        }
+
+        // Render the page
+        const renderTask = page.render(renderContext)
+        await renderTask.promise
+
+        console.log(`PDF page ${pageNumber} rendered successfully`)
+        setRenderingPage(false)
+      } catch (error) {
+        console.error("Error rendering PDF page:", error)
+        setErrorMessage(`Error rendering page ${pageNumber}. Please try refreshing.`)
+        setRenderingPage(false)
+
+        // Retry after a delay
+        setTimeout(() => {
+          if (pdfDocRef.current && canvasRef.current) {
+            renderPdfPage(pageNumber)
+          }
+        }, 2000)
+      }
+    },
+    [zoomLevel, pageRotation, renderingPage],
+  )
+
   // PDF Editor Functions
   const loadPdfDocument = useCallback(
     async (file: SelectedFile) => {
@@ -350,15 +418,27 @@ export default function PDFEditorPlatform() {
 
         console.log("Loading PDF document:", file.file.name)
 
+        // Create array buffer from file
+        const arrayBuffer = await file.file.arrayBuffer()
+
         const loadingTask = pdfjsLib.getDocument({
-          url: file.url,
+          data: arrayBuffer,
           cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
           cMapPacked: true,
           enableXfa: true,
           disableRange: false,
           disableStream: false,
           disableAutoFetch: false,
+          verbosity: 0, // Reduce console output
         })
+
+        // Add progress tracking
+        loadingTask.onProgress = (progressData: { loaded: number; total: number }) => {
+          if (progressData.total > 0) {
+            const progress = (progressData.loaded / progressData.total) * 100
+            console.log(`Loading PDF: ${Math.round(progress)}%`)
+          }
+        }
 
         const pdf = await loadingTask.promise
         pdfDocRef.current = pdf
@@ -368,42 +448,46 @@ export default function PDFEditorPlatform() {
         // Create pages array
         const pagesArray: PDFPage[] = []
         for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i)
-          const viewport = page.getViewport({ scale: 1.0, rotation: 0 })
-
-          let textItems: PDFTextItem[] = []
           try {
-            const textContent = await page.getTextContent()
-            textItems = textContent.items
-              .filter((item: any) => item.str && item.str.trim())
-              .map((item: any, index: number) => {
-                const transform = item.transform || [1, 0, 0, 1, 0, 0]
-                const x = transform[4]
-                const y = viewport.height - transform[5]
+            const page = await pdf.getPage(i)
+            const viewport = page.getViewport({ scale: 1.0, rotation: 0 })
 
-                return {
-                  id: `text-${i}-${index}`,
-                  text: item.str,
-                  x,
-                  y,
-                  width: item.width || item.str.length * 8,
-                  height: item.fontSize || 12,
-                  fontSize: item.fontSize || 12,
-                  fontFamily: item.fontName || "sans-serif",
-                }
-              })
-          } catch (textError) {
-            console.warn("Could not extract text from page", i, textError)
+            let textItems: PDFTextItem[] = []
+            try {
+              const textContent = await page.getTextContent()
+              textItems = textContent.items
+                .filter((item: any) => item.str && item.str.trim())
+                .map((item: any, index: number) => {
+                  const transform = item.transform || [1, 0, 0, 1, 0, 0]
+                  const x = transform[4]
+                  const y = viewport.height - transform[5]
+
+                  return {
+                    id: `text-${i}-${index}`,
+                    text: item.str,
+                    x,
+                    y,
+                    width: item.width || item.str.length * 8,
+                    height: item.fontSize || 12,
+                    fontSize: item.fontSize || 12,
+                    fontFamily: item.fontName || "sans-serif",
+                  }
+                })
+            } catch (textError) {
+              console.warn("Could not extract text from page", i, textError)
+            }
+
+            pagesArray.push({
+              id: `page-${i}`,
+              pageNumber: i,
+              width: viewport.width,
+              height: viewport.height,
+              rotation: 0,
+              textItems,
+            })
+          } catch (pageError) {
+            console.error(`Error loading page ${i}:`, pageError)
           }
-
-          pagesArray.push({
-            id: `page-${i}`,
-            pageNumber: i,
-            width: viewport.width,
-            height: viewport.height,
-            rotation: 0,
-            textItems,
-          })
         }
 
         setPdfPages(pagesArray)
@@ -411,10 +495,12 @@ export default function PDFEditorPlatform() {
         setCurrentPage(1)
         setRenderingPage(false)
 
-        // Render first page immediately
+        // Render first page after a short delay
         setTimeout(() => {
-          renderPdfPage(1)
-        }, 100)
+          if (canvasRef.current) {
+            renderPdfPage(1)
+          }
+        }, 200)
 
         toast({
           title: "PDF loaded successfully",
@@ -422,16 +508,17 @@ export default function PDFEditorPlatform() {
         })
       } catch (error) {
         console.error("Error loading PDF document:", error)
-        setErrorMessage("Error loading PDF. The file may be corrupted or password protected.")
+        setErrorMessage("Error loading PDF. The file may be corrupted, password protected, or unsupported.")
         setRenderingPage(false)
+        setPdfLoaded(false)
         toast({
           title: "Error loading PDF",
-          description: "There was a problem loading your PDF file.",
+          description: "There was a problem loading your PDF file. Please try a different file.",
           variant: "destructive",
         })
       }
     },
-    [pdfLibLoaded, toast],
+    [pdfLibLoaded, toast, renderPdfPage],
   )
 
   const handleFileSelect = useCallback(
@@ -515,75 +602,6 @@ export default function PDFEditorPlatform() {
       console.error("Error removing file:", error)
     }
   }, [selectedFile])
-
-  const renderPdfPage = useCallback(
-    async (pageNumber: number) => {
-      if (!pdfDocRef.current || !canvasRef.current || renderingPage) {
-        return
-      }
-
-      setRenderingPage(true)
-
-      try {
-        const pdf = pdfDocRef.current
-        const page = await pdf.getPage(pageNumber)
-        const canvas = canvasRef.current
-        const context = canvas.getContext("2d")
-
-        if (!context) {
-          setRenderingPage(false)
-          return
-        }
-
-        // Clear canvas
-        context.clearRect(0, 0, canvas.width, canvas.height)
-
-        const viewport = page.getViewport({
-          scale: zoomLevel / 100,
-          rotation: pageRotation,
-        })
-
-        canvas.width = viewport.width
-        canvas.height = viewport.height
-        canvas.style.width = viewport.width + "px"
-        canvas.style.height = viewport.height + "px"
-
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-        }
-
-        await page.render(renderContext).promise
-        console.log(`PDF page ${pageNumber} rendered successfully`)
-        setRenderingPage(false)
-      } catch (error) {
-        console.error("Error rendering PDF page:", error)
-        setErrorMessage("Error rendering PDF page.")
-        setRenderingPage(false)
-      }
-    },
-    [zoomLevel, pageRotation, renderingPage],
-  )
-
-  // Render PDF when page changes
-  useEffect(() => {
-    if (pdfLoaded && currentPage && pdfDocRef.current && canvasRef.current) {
-      if (renderTimeoutRef.current) {
-        clearTimeout(renderTimeoutRef.current)
-      }
-
-      renderTimeoutRef.current = setTimeout(() => {
-        renderPdfPage(currentPage)
-      }, 100)
-    }
-
-    return () => {
-      if (renderTimeoutRef.current) {
-        clearTimeout(renderTimeoutRef.current)
-        renderTimeoutRef.current = null
-      }
-    }
-  }, [pdfLoaded, currentPage, zoomLevel, pageRotation, renderPdfPage])
 
   const rotatePage = useCallback(() => {
     setPageRotation((prev) => (prev + 90) % 360)
@@ -1344,6 +1362,14 @@ export default function PDFEditorPlatform() {
                       }}
                       ref={pdfContainerRef}
                     >
+                      {renderingPage && (
+                        <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-20">
+                          <div className="text-center">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
+                            <p className="text-sm text-gray-600">Rendering page {currentPage}...</p>
+                          </div>
+                        </div>
+                      )}
                       {/* PDF Canvas */}
                       <canvas ref={canvasRef} className="absolute top-0 left-0" />
 
