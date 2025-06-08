@@ -32,6 +32,9 @@ import {
   PenTool,
   Highlighter,
   Minus,
+  Undo2,
+  Redo2,
+  Edit,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -65,7 +68,16 @@ interface SelectedFile {
 
 interface Annotation {
   id: string
-  type: "text" | "highlight" | "rectangle" | "circle" | "arrow" | "freehand" | "underline" | "strikethrough"
+  type:
+    | "text"
+    | "highlight"
+    | "rectangle"
+    | "circle"
+    | "arrow"
+    | "freehand"
+    | "underline"
+    | "strikethrough"
+    | "editText"
   x: number
   y: number
   width?: number
@@ -75,6 +87,7 @@ interface Annotation {
   fontSize?: number
   page: number
   points?: { x: number; y: number }[]
+  originalText?: string
 }
 
 interface PDFPage {
@@ -84,6 +97,22 @@ interface PDFPage {
   height: number
   rotation: number
   canvas?: HTMLCanvasElement
+  textItems?: PDFTextItem[]
+}
+
+interface PDFTextItem {
+  id: string
+  text: string
+  x: number
+  y: number
+  width: number
+  height: number
+  fontSize: number
+  fontFamily: string
+}
+
+interface HistoryState {
+  annotations: Annotation[]
 }
 
 // Main App Component
@@ -108,10 +137,45 @@ export default function PDFEditorPlatform() {
   const [pdfLoaded, setPdfLoaded] = useState(false)
   const [drawingAnnotation, setDrawingAnnotation] = useState<Annotation | null>(null)
   const [currentOperation, setCurrentOperation] = useState<string>("")
+  const [editingTextAnnotation, setEditingTextAnnotation] = useState<Annotation | null>(null)
+  const [history, setHistory] = useState<HistoryState[]>([{ annotations: [] }])
+  const [historyIndex, setHistoryIndex] = useState(0)
+  const [textEditMode, setTextEditMode] = useState(false)
+  const [selectedTextItem, setSelectedTextItem] = useState<PDFTextItem | null>(null)
+
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const textLayerRef = useRef<HTMLDivElement>(null)
+  const textEditRef = useRef<HTMLTextAreaElement>(null)
   const { toast } = useToast()
+
+  // Add to history when annotations change
+  useEffect(() => {
+    if (annotations.length > 0 || historyIndex > 0) {
+      // Only add to history if this is a user action, not an undo/redo
+      if (historyIndex === history.length - 1) {
+        setHistory((prev) => [...prev.slice(0, historyIndex + 1), { annotations: [...annotations] }])
+        setHistoryIndex((prev) => prev + 1)
+      }
+    }
+  }, [annotations.length])
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1
+      setHistoryIndex(newIndex)
+      setAnnotations(history[newIndex].annotations)
+    }
+  }
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1
+      setHistoryIndex(newIndex)
+      setAnnotations(history[newIndex].annotations)
+    }
+  }
 
   useEffect(() => {
     // Check for saved user session
@@ -253,6 +317,11 @@ export default function PDFEditorPlatform() {
       setSelectedFile(newFile)
       setCurrentEditingFile(newFile)
 
+      // Reset history when loading a new file
+      setHistory([{ annotations: [] }])
+      setHistoryIndex(0)
+      setAnnotations([])
+
       // If it's a PDF, load it immediately
       if (file.type === "application/pdf") {
         await loadPdfDocument(newFile)
@@ -272,6 +341,8 @@ export default function PDFEditorPlatform() {
     setPdfPages([])
     setAnnotations([])
     setCurrentPage(1)
+    setHistory([{ annotations: [] }])
+    setHistoryIndex(0)
     if ((window as any).currentPdfDoc) {
       delete (window as any).currentPdfDoc
     }
@@ -299,12 +370,38 @@ export default function PDFEditorPlatform() {
         const page = await pdf.getPage(i)
         const viewport = page.getViewport({ scale: 1.0 })
 
+        // Extract text content for text editing
+        const textContent = await page.getTextContent()
+        const textItems: PDFTextItem[] = []
+
+        textContent.items.forEach((item: any, index: number) => {
+          if (item.str && item.str.trim()) {
+            const transform = item.transform || [1, 0, 0, 1, 0, 0]
+            const x = transform[4]
+            const y = transform[5]
+            const width = item.width || item.str.length * (item.fontSize || 12) * 0.6
+            const height = item.height || (item.fontSize || 12) * 1.2
+
+            textItems.push({
+              id: `text-${i}-${index}`,
+              text: item.str,
+              x,
+              y: viewport.height - y, // Flip y-coordinate
+              width,
+              height,
+              fontSize: item.fontSize || 12,
+              fontFamily: item.fontName || "sans-serif",
+            })
+          }
+        })
+
         pagesArray.push({
           id: `page-${i}`,
           pageNumber: i,
           width: viewport.width,
           height: viewport.height,
           rotation: 0,
+          textItems,
         })
       }
 
@@ -395,6 +492,10 @@ export default function PDFEditorPlatform() {
 
   const removeAnnotation = (annotationId: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== annotationId))
+  }
+
+  const updateAnnotation = (id: string, updates: Partial<Annotation>) => {
+    setAnnotations((prev) => prev.map((ann) => (ann.id === id ? { ...ann, ...updates } : ann)))
   }
 
   // Process files function with actual editing
@@ -628,6 +729,50 @@ export default function PDFEditorPlatform() {
           })
         }
         setIsDrawing(false)
+      } else if (selectedTool === "editText") {
+        // Check if clicked on a text item
+        const textItems = currentPageData?.textItems || []
+        const clickedItem = textItems.find((item) => {
+          const scale = zoomLevel / 100
+          return (
+            x >= item.x * scale &&
+            x <= (item.x + item.width) * scale &&
+            y >= item.y * scale &&
+            y <= (item.y + item.height) * scale
+          )
+        })
+
+        if (clickedItem) {
+          setSelectedTextItem(clickedItem)
+
+          // Create an edit text annotation
+          const editAnnotation: Annotation = {
+            id: "edit-" + Date.now().toString(),
+            type: "editText",
+            x: clickedItem.x * (zoomLevel / 100),
+            y: clickedItem.y * (zoomLevel / 100),
+            width: clickedItem.width * (zoomLevel / 100),
+            height: clickedItem.height * (zoomLevel / 100),
+            text: clickedItem.text,
+            originalText: clickedItem.text,
+            color: selectedColor,
+            fontSize: clickedItem.fontSize,
+            page: currentPage,
+          }
+
+          setEditingTextAnnotation(editAnnotation)
+          setTextEditMode(true)
+
+          // Focus the text edit area after it's rendered
+          setTimeout(() => {
+            if (textEditRef.current) {
+              textEditRef.current.focus()
+              textEditRef.current.select()
+            }
+          }, 100)
+        }
+
+        setIsDrawing(false)
       } else if (["highlight", "rectangle", "circle", "underline", "strikethrough"].includes(selectedTool)) {
         const newAnnotation: Annotation = {
           id: "temp-" + Date.now().toString(),
@@ -655,7 +800,7 @@ export default function PDFEditorPlatform() {
     }
 
     const handleCanvasMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isDrawing || selectedTool === "select" || selectedTool === "text") return
+      if (!isDrawing || selectedTool === "select" || selectedTool === "text" || selectedTool === "editText") return
 
       const rect = e.currentTarget.getBoundingClientRect()
       const currentX = e.clientX - rect.left
@@ -702,6 +847,36 @@ export default function PDFEditorPlatform() {
         }
         setDrawingAnnotation(null)
       }
+    }
+
+    const handleTextEditSave = () => {
+      if (editingTextAnnotation && textEditRef.current) {
+        const newText = textEditRef.current.value
+
+        // Add the edited text as a permanent annotation
+        addAnnotation({
+          type: "editText",
+          x: editingTextAnnotation.x,
+          y: editingTextAnnotation.y,
+          width: editingTextAnnotation.width,
+          height: editingTextAnnotation.height,
+          text: newText,
+          originalText: editingTextAnnotation.originalText,
+          color: selectedColor,
+          fontSize: editingTextAnnotation.fontSize || fontSize,
+          page: currentPage,
+        })
+
+        setEditingTextAnnotation(null)
+        setTextEditMode(false)
+        setSelectedTextItem(null)
+      }
+    }
+
+    const handleTextEditCancel = () => {
+      setEditingTextAnnotation(null)
+      setTextEditMode(false)
+      setSelectedTextItem(null)
     }
 
     return (
@@ -888,6 +1063,17 @@ export default function PDFEditorPlatform() {
                       <Type className="h-4 w-4" />
                     </Button>
                     <Button
+                      variant={selectedTool === "editText" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTool("editText")
+                        forceRenderPDF()
+                      }}
+                      title="Edit existing text in PDF"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button
                       variant={selectedTool === "highlight" ? "default" : "outline"}
                       size="sm"
                       onClick={() => {
@@ -949,6 +1135,22 @@ export default function PDFEditorPlatform() {
                     </Button>
                   </div>
 
+                  {/* Undo/Redo Buttons */}
+                  <div className="flex gap-2 justify-center">
+                    <Button variant="outline" size="sm" onClick={undo} disabled={historyIndex <= 0} title="Undo">
+                      <Undo2 className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={redo}
+                      disabled={historyIndex >= history.length - 1}
+                      title="Redo"
+                    >
+                      <Redo2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+
                   <div className="space-y-2">
                     <Label>Color</Label>
                     <div className="flex gap-2 flex-wrap">
@@ -982,7 +1184,6 @@ export default function PDFEditorPlatform() {
                     <Label>Zoom: {zoomLevel}%</Label>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={() => setZoomLevel(Math.max(25, zoomLevel - 25))}>
-                        utton variant="outline" size="sm" onClick={() => setZoomLevel(Math.max(25, zoomLevel - 25))}>
                         <ZoomOut className="h-4 w-4" />
                       </Button>
                       <Button variant="outline" size="sm" onClick={() => setZoomLevel(100)}>
@@ -1063,8 +1264,60 @@ export default function PDFEditorPlatform() {
                         width: currentPageData ? currentPageData.width * (zoomLevel / 100) : 595,
                         height: currentPageData ? currentPageData.height * (zoomLevel / 100) : 842,
                       }}
+                      ref={pdfContainerRef}
                     >
                       <canvas ref={canvasRef} className="absolute top-0 left-0" />
+
+                      {/* Text Layer for editing */}
+                      <div ref={textLayerRef} className="absolute top-0 left-0 w-full h-full pointer-events-none">
+                        {selectedTool === "editText" &&
+                          currentPageData?.textItems?.map((item) => (
+                            <div
+                              key={item.id}
+                              className="absolute border border-transparent hover:border-blue-400 cursor-text pointer-events-auto"
+                              style={{
+                                left: item.x * (zoomLevel / 100),
+                                top: item.y * (zoomLevel / 100),
+                                width: item.width * (zoomLevel / 100),
+                                height: item.height * (zoomLevel / 100),
+                                fontSize: item.fontSize * (zoomLevel / 100),
+                                fontFamily: item.fontFamily,
+                              }}
+                            />
+                          ))}
+                      </div>
+
+                      {/* Text Edit Mode */}
+                      {textEditMode && editingTextAnnotation && (
+                        <div
+                          className="absolute bg-white border-2 border-blue-500 p-1 z-50"
+                          style={{
+                            left: editingTextAnnotation.x,
+                            top: editingTextAnnotation.y,
+                            minWidth: editingTextAnnotation.width,
+                            minHeight: editingTextAnnotation.height,
+                          }}
+                        >
+                          <textarea
+                            ref={textEditRef}
+                            defaultValue={editingTextAnnotation.text}
+                            className="w-full h-full min-h-[40px] p-1 focus:outline-none resize-none"
+                            style={{
+                              fontSize: editingTextAnnotation.fontSize
+                                ? editingTextAnnotation.fontSize * (zoomLevel / 100)
+                                : fontSize * (zoomLevel / 100),
+                            }}
+                          />
+                          <div className="flex justify-end gap-1 mt-1">
+                            <Button size="sm" variant="outline" onClick={handleTextEditCancel}>
+                              Cancel
+                            </Button>
+                            <Button size="sm" onClick={handleTextEditSave}>
+                              Save
+                            </Button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Annotations Layer */}
                       <div
@@ -1075,7 +1328,14 @@ export default function PDFEditorPlatform() {
                         onMouseLeave={handleCanvasMouseUp}
                         style={{
                           cursor:
-                            selectedTool === "select" ? "default" : selectedTool === "text" ? "text" : "crosshair",
+                            selectedTool === "select"
+                              ? "default"
+                              : selectedTool === "text"
+                                ? "text"
+                                : selectedTool === "editText"
+                                  ? "text"
+                                  : "crosshair",
+                          pointerEvents: textEditMode ? "none" : "auto", // Disable when editing text
                         }}
                       >
                         {/* Existing Annotations */}
@@ -1102,6 +1362,18 @@ export default function PDFEditorPlatform() {
                             {annotation.type === "text" && (
                               <div
                                 className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
+                                style={{
+                                  color: annotation.color,
+                                  fontSize: annotation.fontSize,
+                                }}
+                              >
+                                {annotation.text}
+                              </div>
+                            )}
+
+                            {annotation.type === "editText" && (
+                              <div
+                                className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-blue-300"
                                 style={{
                                   color: annotation.color,
                                   fontSize: annotation.fontSize,
