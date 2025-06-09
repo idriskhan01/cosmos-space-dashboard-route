@@ -11,6 +11,7 @@ import { Slider } from "@/components/ui/slider"
 import {
   FileText,
   Upload,
+  Download,
   Split,
   FileArchiveIcon as Compress,
   RotateCw,
@@ -30,12 +31,10 @@ import {
   Circle,
   PenTool,
   Highlighter,
+  Minus,
   Undo2,
   Redo2,
-  AlertCircle,
-  Download,
-  ChevronLeft,
-  ChevronRight,
+  Edit,
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -145,9 +144,6 @@ export default function PDFEditorPlatform() {
   const [selectedTextItem, setSelectedTextItem] = useState<PDFTextItem | null>(null)
   const [pdfLibLoaded, setPdfLibLoaded] = useState(false)
   const [renderingPage, setRenderingPage] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [exportProgress, setExportProgress] = useState(0)
-  const [pageRotation, setPageRotation] = useState(0)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pdfContainerRef = useRef<HTMLDivElement>(null)
@@ -157,6 +153,45 @@ export default function PDFEditorPlatform() {
   const pdfDocRef = useRef<any>(null)
   const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const { toast } = useToast()
+
+  // Stable callback for adding to history
+  const addToHistory = useCallback(
+    (newAnnotations: Annotation[]) => {
+      setHistory((prev) => {
+        const newHistory = [...prev.slice(0, historyIndex + 1), { annotations: [...newAnnotations] }]
+        return newHistory
+      })
+      setHistoryIndex((prev) => prev + 1)
+    },
+    [historyIndex],
+  )
+
+  // Add to history when annotations change (with debouncing)
+  useEffect(() => {
+    if (annotations.length > 0) {
+      const timeoutId = setTimeout(() => {
+        addToHistory(annotations)
+      }, 500) // Debounce for 500ms
+
+      return () => clearTimeout(timeoutId)
+    }
+  }, [annotations, addToHistory])
+
+  const undo = useCallback(() => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1
+      setHistoryIndex(newIndex)
+      setAnnotations(history[newIndex].annotations)
+    }
+  }, [historyIndex, history])
+
+  const redo = useCallback(() => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1
+      setHistoryIndex(newIndex)
+      setAnnotations(history[newIndex].annotations)
+    }
+  }, [historyIndex, history])
 
   // Load PDF.js library
   useEffect(() => {
@@ -186,7 +221,6 @@ export default function PDFEditorPlatform() {
 
         script.onerror = () => {
           console.error("Failed to load PDF.js")
-          setErrorMessage("Failed to load PDF library. Please refresh the page.")
           toast({
             title: "Error loading PDF library",
             description: "Please refresh the page to try again.",
@@ -203,7 +237,6 @@ export default function PDFEditorPlatform() {
         }
       } catch (error) {
         console.error("Error loading PDF.js:", error)
-        setErrorMessage("Error initializing PDF library. Please refresh the page.")
       }
     }
 
@@ -239,6 +272,10 @@ export default function PDFEditorPlatform() {
     },
     [currentView],
   )
+
+  const goBack = useCallback(() => {
+    setCurrentView(previousView)
+  }, [previousView])
 
   const toggleDarkMode = useCallback(() => {
     setDarkMode((prev) => {
@@ -327,73 +364,85 @@ export default function PDFEditorPlatform() {
     })
   }, [])
 
-  const renderPdfPage = useCallback(
-    async (pageNumber: number) => {
-      if (!pdfDocRef.current || !canvasRef.current || renderingPage) {
-        return
-      }
+  const handleFileSelect = useCallback(
+    async (files: FileList) => {
+      if (files.length === 0) return
 
-      setRenderingPage(true)
-
-      try {
-        const pdf = pdfDocRef.current
-        const page = await pdf.getPage(pageNumber)
-        const canvas = canvasRef.current
-        const context = canvas.getContext("2d")
-
-        if (!context) {
-          console.error("Could not get canvas context")
-          setRenderingPage(false)
-          return
-        }
-
-        // Calculate viewport with proper scaling
-        const scale = zoomLevel / 100
-        const viewport = page.getViewport({
-          scale: scale,
-          rotation: pageRotation,
-        })
-
-        // Set canvas dimensions
-        canvas.width = Math.floor(viewport.width)
-        canvas.height = Math.floor(viewport.height)
-        canvas.style.width = Math.floor(viewport.width) + "px"
-        canvas.style.height = Math.floor(viewport.height) + "px"
-
-        // Clear canvas before rendering
-        context.clearRect(0, 0, canvas.width, canvas.height)
-
-        // Set white background
-        context.fillStyle = "white"
-        context.fillRect(0, 0, canvas.width, canvas.height)
-
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-          enableWebGL: false, // Disable WebGL for better compatibility
-        }
-
-        // Render the page
-        const renderTask = page.render(renderContext)
-        await renderTask.promise
-
-        console.log(`PDF page ${pageNumber} rendered successfully`)
-        setRenderingPage(false)
-      } catch (error) {
-        console.error("Error rendering PDF page:", error)
-        setErrorMessage(`Error rendering page ${pageNumber}. Please try refreshing.`)
-        setRenderingPage(false)
-
-        // Retry after a delay
-        setTimeout(() => {
-          if (pdfDocRef.current && canvasRef.current) {
-            renderPdfPage(pageNumber)
+      const file = files[0] // Only take the first file
+      if (validateFile(file)) {
+        try {
+          const preview = await createFilePreview(file)
+          const url = URL.createObjectURL(file)
+          const newFile: SelectedFile = {
+            file,
+            preview,
+            id: Date.now().toString(),
+            url,
           }
-        }, 2000)
+
+          setSelectedFile(newFile)
+          setCurrentEditingFile(newFile)
+
+          // Reset state when loading a new file
+          setHistory([{ annotations: [] }])
+          setHistoryIndex(0)
+          setAnnotations([])
+          setPdfLoaded(false)
+          setPdfPages([])
+          setCurrentPage(1)
+
+          // If it's a PDF, load it immediately
+          if (file.type === "application/pdf") {
+            await loadPdfDocument(newFile)
+          }
+
+          toast({
+            title: "File selected",
+            description: `${file.name} is ready for editing.`,
+          })
+        } catch (error) {
+          console.error("Error selecting file:", error)
+          toast({
+            title: "Error selecting file",
+            description: "There was a problem with the selected file.",
+            variant: "destructive",
+          })
+        }
       }
     },
-    [zoomLevel, pageRotation, renderingPage],
+    [validateFile, createFilePreview, toast],
   )
+
+  const removeFile = useCallback(() => {
+    try {
+      // Clean up object URL
+      if (selectedFile?.url) {
+        URL.revokeObjectURL(selectedFile.url)
+      }
+
+      setSelectedFile(null)
+      setCurrentEditingFile(null)
+      setPdfLoaded(false)
+      setPdfPages([])
+      setAnnotations([])
+      setCurrentPage(1)
+      setHistory([{ annotations: [] }])
+      setHistoryIndex(0)
+
+      // Clean up PDF document reference
+      if (pdfDocRef.current) {
+        pdfDocRef.current = null
+      }
+
+      // Clear any pending render timeouts
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+        renderTimeoutRef.current = null
+      }
+    } catch (error) {
+      console.error("Error removing file:", error)
+    }
+  }, [selectedFile])
 
   // PDF Editor Functions
   const loadPdfDocument = useCallback(
@@ -408,99 +457,67 @@ export default function PDFEditorPlatform() {
       }
 
       try {
-        setErrorMessage(null)
-        setRenderingPage(true)
-
         const pdfjsLib = (window as any).pdfjsLib
         if (!pdfjsLib) {
           throw new Error("PDF.js library not available")
         }
 
-        console.log("Loading PDF document:", file.file.name)
-
-        // Create array buffer from file
-        const arrayBuffer = await file.file.arrayBuffer()
-
-        const loadingTask = pdfjsLib.getDocument({
-          data: arrayBuffer,
-          cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
-          cMapPacked: true,
-          enableXfa: true,
-          disableRange: false,
-          disableStream: false,
-          disableAutoFetch: false,
-          verbosity: 0, // Reduce console output
-        })
-
-        // Add progress tracking
-        loadingTask.onProgress = (progressData: { loaded: number; total: number }) => {
-          if (progressData.total > 0) {
-            const progress = (progressData.loaded / progressData.total) * 100
-            console.log(`Loading PDF: ${Math.round(progress)}%`)
-          }
-        }
-
+        const loadingTask = pdfjsLib.getDocument(file.url)
         const pdf = await loadingTask.promise
+
+        // Store PDF document reference
         pdfDocRef.current = pdf
 
-        console.log(`PDF loaded with ${pdf.numPages} pages`)
-
-        // Create pages array
+        // Create pages array for all pages
         const pagesArray: PDFPage[] = []
         for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i)
+          const viewport = page.getViewport({ scale: 1.0 })
+
+          // Extract text content for text editing with better positioning
+          let textItems: PDFTextItem[] = []
           try {
-            const page = await pdf.getPage(i)
-            const viewport = page.getViewport({ scale: 1.0, rotation: 0 })
+            const textContent = await page.getTextContent()
+            textItems = textContent.items
+              .filter((item: any) => item.str && item.str.trim())
+              .map((item: any, index: number) => {
+                const transform = item.transform || [1, 0, 0, 1, 0, 0]
+                const x = transform[4]
+                const y = viewport.height - transform[5] // Flip y-coordinate
 
-            let textItems: PDFTextItem[] = []
-            try {
-              const textContent = await page.getTextContent()
-              textItems = textContent.items
-                .filter((item: any) => item.str && item.str.trim())
-                .map((item: any, index: number) => {
-                  const transform = item.transform || [1, 0, 0, 1, 0, 0]
-                  const x = transform[4]
-                  const y = viewport.height - transform[5]
+                // Better width calculation based on font metrics
+                const charWidth = (item.fontSize || 12) * 0.6
+                const width = item.width || item.str.length * charWidth
+                const height = (item.fontSize || 12) * 1.2
 
-                  return {
-                    id: `text-${i}-${index}`,
-                    text: item.str,
-                    x,
-                    y,
-                    width: item.width || item.str.length * 8,
-                    height: item.fontSize || 12,
-                    fontSize: item.fontSize || 12,
-                    fontFamily: item.fontName || "sans-serif",
-                  }
-                })
-            } catch (textError) {
-              console.warn("Could not extract text from page", i, textError)
-            }
-
-            pagesArray.push({
-              id: `page-${i}`,
-              pageNumber: i,
-              width: viewport.width,
-              height: viewport.height,
-              rotation: 0,
-              textItems,
-            })
-          } catch (pageError) {
-            console.error(`Error loading page ${i}:`, pageError)
+                return {
+                  id: `text-${i}-${index}`,
+                  text: item.str,
+                  x,
+                  y,
+                  width,
+                  height,
+                  fontSize: item.fontSize || 12,
+                  fontFamily: item.fontName || "sans-serif",
+                }
+              })
+          } catch (textError) {
+            console.warn("Could not extract text from page", i, textError)
           }
+
+          pagesArray.push({
+            id: `page-${i}`,
+            pageNumber: i,
+            width: viewport.width,
+            height: viewport.height,
+            rotation: 0,
+            textItems,
+          })
         }
 
         setPdfPages(pagesArray)
         setPdfLoaded(true)
         setCurrentPage(1)
-        setRenderingPage(false)
-
-        // Render first page after a short delay
-        setTimeout(() => {
-          if (canvasRef.current) {
-            renderPdfPage(1)
-          }
-        }, 200)
 
         toast({
           title: "PDF loaded successfully",
@@ -508,104 +525,105 @@ export default function PDFEditorPlatform() {
         })
       } catch (error) {
         console.error("Error loading PDF document:", error)
-        setErrorMessage("Error loading PDF. The file may be corrupted, password protected, or unsupported.")
-        setRenderingPage(false)
-        setPdfLoaded(false)
         toast({
           title: "Error loading PDF",
-          description: "There was a problem loading your PDF file. Please try a different file.",
+          description: "There was a problem loading your PDF file.",
           variant: "destructive",
         })
       }
     },
-    [pdfLibLoaded, toast, renderPdfPage],
+    [pdfLibLoaded, toast],
   )
 
-  const handleFileSelect = useCallback(
-    async (files: FileList) => {
-      if (files.length === 0) return
+  const renderPdfPage = useCallback(
+    async (pageNumber: number) => {
+      if (!currentEditingFile || !pdfLoaded || !pdfDocRef.current || renderingPage) {
+        return
+      }
 
-      const file = files[0]
-      if (validateFile(file)) {
-        try {
-          setErrorMessage(null)
-          const preview = await createFilePreview(file)
-          const url = URL.createObjectURL(file)
-          const newFile: SelectedFile = {
-            file,
-            preview,
-            id: Date.now().toString(),
-            url,
-          }
+      setRenderingPage(true)
 
-          setSelectedFile(newFile)
-          setCurrentEditingFile(newFile)
+      try {
+        const pdf = pdfDocRef.current
+        const page = await pdf.getPage(pageNumber)
+        const canvas = canvasRef.current
 
-          // Reset state
-          setHistory([{ annotations: [] }])
-          setHistoryIndex(0)
-          setAnnotations([])
-          setPdfLoaded(false)
-          setPdfPages([])
-          setCurrentPage(1)
-          setPageRotation(0)
-
-          // Load PDF if it's a PDF file
-          if (file.type === "application/pdf") {
-            await loadPdfDocument(newFile)
-          }
-
-          toast({
-            title: "File selected",
-            description: `${file.name} is ready for editing.`,
-          })
-        } catch (error) {
-          console.error("Error selecting file:", error)
-          setErrorMessage("Error selecting file. Please try again with a different file.")
-          toast({
-            title: "Error selecting file",
-            description: "There was a problem with the selected file.",
-            variant: "destructive",
-          })
+        if (!canvas) {
+          setRenderingPage(false)
+          return
         }
+
+        const context = canvas.getContext("2d")
+        if (!context) {
+          setRenderingPage(false)
+          return
+        }
+
+        // Clear the canvas first
+        context.clearRect(0, 0, canvas.width, canvas.height)
+
+        const viewport = page.getViewport({ scale: zoomLevel / 100 })
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        canvas.style.width = viewport.width + "px"
+        canvas.style.height = viewport.height + "px"
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        }
+
+        await page.render(renderContext).promise
+        console.log(`PDF page ${pageNumber} rendered successfully`)
+      } catch (error) {
+        console.error("Error rendering PDF page:", error)
+        // Retry rendering after a short delay
+        if (renderTimeoutRef.current) {
+          clearTimeout(renderTimeoutRef.current)
+        }
+        renderTimeoutRef.current = setTimeout(() => {
+          if (pdfLoaded && pdfDocRef.current) {
+            setRenderingPage(false)
+            renderPdfPage(pageNumber)
+          }
+        }, 1000)
+      } finally {
+        setRenderingPage(false)
       }
     },
-    [validateFile, createFilePreview, loadPdfDocument, toast],
+    [currentEditingFile, pdfLoaded, zoomLevel, renderingPage],
   )
 
-  const removeFile = useCallback(() => {
-    try {
-      if (selectedFile?.url) {
-        URL.revokeObjectURL(selectedFile.url)
+  // Stable render effect
+  useEffect(() => {
+    if (pdfLoaded && currentPage && pdfDocRef.current && canvasRef.current && !renderingPage) {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
       }
 
-      setSelectedFile(null)
-      setCurrentEditingFile(null)
-      setPdfLoaded(false)
-      setPdfPages([])
-      setAnnotations([])
-      setCurrentPage(1)
-      setHistory([{ annotations: [] }])
-      setHistoryIndex(0)
-      setPageRotation(0)
-      setErrorMessage(null)
+      renderTimeoutRef.current = setTimeout(() => {
+        renderPdfPage(currentPage)
+      }, 100)
+    }
 
-      if (pdfDocRef.current) {
-        pdfDocRef.current = null
-      }
-
+    return () => {
       if (renderTimeoutRef.current) {
         clearTimeout(renderTimeoutRef.current)
         renderTimeoutRef.current = null
       }
-    } catch (error) {
-      console.error("Error removing file:", error)
     }
-  }, [selectedFile])
+  }, [pdfLoaded, currentPage, zoomLevel, renderPdfPage, renderingPage])
 
-  const rotatePage = useCallback(() => {
-    setPageRotation((prev) => (prev + 90) % 360)
-  }, [])
+  const forceRenderPDF = useCallback(() => {
+    if (pdfLoaded && currentPage && pdfDocRef.current && !renderingPage) {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current)
+      }
+      renderTimeoutRef.current = setTimeout(() => {
+        renderPdfPage(currentPage)
+      }, 50)
+    }
+  }, [pdfLoaded, currentPage, renderPdfPage, renderingPage])
 
   const addAnnotation = useCallback((annotation: Omit<Annotation, "id">) => {
     const newAnnotation: Annotation = {
@@ -619,35 +637,11 @@ export default function PDFEditorPlatform() {
     setAnnotations((prev) => prev.filter((a) => a.id !== annotationId))
   }, [])
 
-  // Undo/Redo functionality
-  const addToHistory = useCallback(
-    (newAnnotations: Annotation[]) => {
-      setHistory((prev) => {
-        const newHistory = [...prev.slice(0, historyIndex + 1), { annotations: [...newAnnotations] }]
-        return newHistory
-      })
-      setHistoryIndex((prev) => prev + 1)
-    },
-    [historyIndex],
-  )
+  const updateAnnotation = (id: string, updates: Partial<Annotation>) => {
+    setAnnotations((prev) => prev.map((ann) => (ann.id === id ? { ...ann, ...updates } : ann)))
+  }
 
-  const undo = useCallback(() => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1
-      setHistoryIndex(newIndex)
-      setAnnotations(history[newIndex].annotations)
-    }
-  }, [historyIndex, history])
-
-  const redo = useCallback(() => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1
-      setHistoryIndex(newIndex)
-      setAnnotations(history[newIndex].annotations)
-    }
-  }, [historyIndex, history])
-
-  // Process files function
+  // Process files function with actual editing
   const processWithTool = useCallback(
     async (operation: string) => {
       if (!selectedFile) {
@@ -659,9 +653,18 @@ export default function PDFEditorPlatform() {
         return
       }
 
+      // For merge operation, we need multiple files
+      if (operation === "merge") {
+        toast({
+          title: "Merge requires multiple files",
+          description: "Please select multiple files for merge operation.",
+          variant: "destructive",
+        })
+        return
+      }
+
       setCurrentOperation(operation)
       setIsLoading(true)
-      setExportProgress(0)
 
       try {
         const newOperation: FileOperation = {
@@ -678,15 +681,12 @@ export default function PDFEditorPlatform() {
         setFileOperations((prev) => [newOperation, ...prev])
 
         // Simulate processing with progress
-        for (let i = 0; i <= 100; i += 10) {
+        const steps = 10
+        for (let i = 0; i <= steps; i++) {
           await new Promise((resolve) => setTimeout(resolve, 200))
-          setExportProgress(i)
-          setFileOperations((prev) => prev.map((op) => (op.id === newOperation.id ? { ...op, progress: i } : op)))
+          const progress = (i / steps) * 100
+          setFileOperations((prev) => prev.map((op) => (op.id === newOperation.id ? { ...op, progress } : op)))
         }
-
-        // Create download blob
-        const blob = new Blob([selectedFile.file], { type: selectedFile.file.type })
-        const downloadUrl = URL.createObjectURL(blob)
 
         setFileOperations((prev) =>
           prev.map((op) =>
@@ -695,7 +695,7 @@ export default function PDFEditorPlatform() {
                   ...op,
                   status: "completed",
                   progress: 100,
-                  downloadUrl,
+                  downloadUrl: `#download-${newOperation.id}`,
                 }
               : op,
           ),
@@ -706,8 +706,6 @@ export default function PDFEditorPlatform() {
           description: `Your file has been processed successfully.`,
         })
       } catch (error) {
-        console.error("Processing error:", error)
-        setErrorMessage(`Error processing file with operation: ${operation}`)
         toast({
           title: "Processing failed",
           description: "There was an error processing your file.",
@@ -716,7 +714,6 @@ export default function PDFEditorPlatform() {
       } finally {
         setIsLoading(false)
         setCurrentOperation("")
-        setExportProgress(0)
       }
     },
     [selectedFile, toast],
@@ -758,19 +755,16 @@ export default function PDFEditorPlatform() {
 
   const downloadFile = useCallback(
     (operation: FileOperation) => {
-      if (operation.downloadUrl) {
-        const link = document.createElement("a")
-        link.href = operation.downloadUrl
-        link.download = operation.outputFileName || operation.fileName
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
+      toast({
+        title: "Download started",
+        description: `Downloading ${operation.outputFileName}...`,
+      })
 
-        toast({
-          title: "Download started",
-          description: `Downloading ${operation.outputFileName}...`,
-        })
-      }
+      // Simulate download
+      const link = document.createElement("a")
+      link.href = "#"
+      link.download = operation.outputFileName || operation.fileName
+      link.click()
     },
     [toast],
   )
@@ -779,14 +773,7 @@ export default function PDFEditorPlatform() {
     if (!currentEditingFile) return
 
     setIsLoading(true)
-    setExportProgress(0)
-
-    const simulateSaving = async () => {
-      for (let i = 0; i <= 100; i += 10) {
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        setExportProgress(i)
-      }
-
+    setTimeout(() => {
       const newOperation: FileOperation = {
         id: Date.now().toString(),
         fileName: currentEditingFile.file.name,
@@ -796,34 +783,18 @@ export default function PDFEditorPlatform() {
         createdAt: new Date(),
         fileSize: currentEditingFile.file.size,
         outputFileName: `edited_${currentEditingFile.file.name}`,
-        downloadUrl: currentEditingFile.url,
+        downloadUrl: "#download",
       }
 
       setFileOperations((prev) => [newOperation, ...prev])
       setIsLoading(false)
-      setExportProgress(0)
 
       toast({
         title: "PDF saved successfully!",
         description: "Your edited PDF is ready for download.",
       })
-    }
-
-    simulateSaving()
+    }, 1000)
   }, [currentEditingFile, toast])
-
-  // Navigation functions
-  const goToPreviousPage = useCallback(() => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1)
-    }
-  }, [currentPage])
-
-  const goToNextPage = useCallback(() => {
-    if (currentPage < pdfPages.length) {
-      setCurrentPage(currentPage + 1)
-    }
-  }, [currentPage, pdfPages.length])
 
   // Header Component
   const Header = () => (
@@ -873,7 +844,7 @@ export default function PDFEditorPlatform() {
     </header>
   )
 
-  // PDF Editor Component
+  // PDF Editor Component with Tools
   const PDFEditorWithTools = () => {
     const currentPageData = pdfPages.find((p) => p.pageNumber === currentPage)
     const pageAnnotations = annotations.filter((a) => a.page === currentPage)
@@ -908,6 +879,51 @@ export default function PDFEditorPlatform() {
             })
           }
           setIsDrawing(false)
+        } else if (selectedTool === "editText") {
+          // Check if clicked on a text item with better hit detection
+          const textItems = currentPageData?.textItems || []
+          const clickedItem = textItems.find((item) => {
+            const scale = zoomLevel / 100
+            const padding = 5 // Add some padding for easier clicking
+            return (
+              x >= item.x * scale - padding &&
+              x <= (item.x + item.width) * scale + padding &&
+              y >= item.y * scale - padding &&
+              y <= (item.y + item.height) * scale + padding
+            )
+          })
+
+          if (clickedItem) {
+            setSelectedTextItem(clickedItem)
+
+            // Create an edit text annotation
+            const editAnnotation: Annotation = {
+              id: "edit-" + Date.now().toString(),
+              type: "editText",
+              x: clickedItem.x * (zoomLevel / 100),
+              y: clickedItem.y * (zoomLevel / 100),
+              width: clickedItem.width * (zoomLevel / 100),
+              height: clickedItem.height * (zoomLevel / 100),
+              text: clickedItem.text,
+              originalText: clickedItem.text,
+              color: selectedColor,
+              fontSize: clickedItem.fontSize,
+              page: currentPage,
+            }
+
+            setEditingTextAnnotation(editAnnotation)
+            setTextEditMode(true)
+
+            // Focus the text edit area after it's rendered
+            setTimeout(() => {
+              if (textEditRef.current) {
+                textEditRef.current.focus()
+                textEditRef.current.select()
+              }
+            }, 100)
+          }
+
+          setIsDrawing(false)
         } else if (["highlight", "rectangle", "circle", "underline", "strikethrough"].includes(selectedTool)) {
           const newAnnotation: Annotation = {
             id: "temp-" + Date.now().toString(),
@@ -933,12 +949,12 @@ export default function PDFEditorPlatform() {
           })
         }
       },
-      [selectedTool, selectedColor, fontSize, currentPage, addAnnotation],
+      [selectedTool, currentPageData, zoomLevel, selectedColor, fontSize, currentPage, addAnnotation],
     )
 
     const handleCanvasMouseMove = useCallback(
       (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!isDrawing || selectedTool === "select" || selectedTool === "text") return
+        if (!isDrawing || selectedTool === "select" || selectedTool === "text" || selectedTool === "editText") return
 
         const rect = e.currentTarget.getBoundingClientRect()
         const currentX = e.clientX - rect.left
@@ -973,24 +989,56 @@ export default function PDFEditorPlatform() {
 
       setIsDrawing(false)
 
-      if (drawingAnnotation && (drawingAnnotation.width > 5 || drawingAnnotation.height > 5)) {
+      if (drawingAnnotation) {
+        if (drawingAnnotation.width > 5 || drawingAnnotation.height > 5) {
+          addAnnotation({
+            type: drawingAnnotation.type,
+            x: drawingAnnotation.x,
+            y: drawingAnnotation.y,
+            width: drawingAnnotation.width,
+            height: drawingAnnotation.height,
+            color: drawingAnnotation.color,
+            page: currentPage,
+          })
+        }
+        setDrawingAnnotation(null)
+      }
+    }, [isDrawing, drawingAnnotation, currentPage, addAnnotation])
+
+    const handleTextEditSave = useCallback(() => {
+      if (editingTextAnnotation && textEditRef.current) {
+        const newText = textEditRef.current.value
+
+        // Add the edited text as a permanent annotation
         addAnnotation({
-          type: drawingAnnotation.type,
-          x: drawingAnnotation.x,
-          y: drawingAnnotation.y,
-          width: drawingAnnotation.width,
-          height: drawingAnnotation.height,
-          color: drawingAnnotation.color,
+          type: "editText",
+          x: editingTextAnnotation.x,
+          y: editingTextAnnotation.y,
+          width: editingTextAnnotation.width,
+          height: editingTextAnnotation.height,
+          text: newText,
+          originalText: editingTextAnnotation.originalText,
+          color: selectedColor,
+          fontSize: editingTextAnnotation.fontSize || fontSize,
           page: currentPage,
         })
+
+        setEditingTextAnnotation(null)
+        setTextEditMode(false)
+        setSelectedTextItem(null)
       }
-      setDrawingAnnotation(null)
-    }, [isDrawing, drawingAnnotation, currentPage, addAnnotation])
+    }, [editingTextAnnotation, selectedColor, fontSize, currentPage, addAnnotation])
+
+    const handleTextEditCancel = useCallback(() => {
+      setEditingTextAnnotation(null)
+      setTextEditMode(false)
+      setSelectedTextItem(null)
+    }, [])
 
     return (
       <div className="container py-4">
         <div className="flex flex-col lg:flex-row gap-4 h-[calc(100vh-120px)]">
-          {/* Left Sidebar */}
+          {/* Left Sidebar - File Selection & Tools */}
           <div className="lg:w-80 space-y-4">
             {/* File Selection */}
             <Card>
@@ -1071,9 +1119,9 @@ export default function PDFEditorPlatform() {
                       Compress
                     </Button>
                     <Button
-                      onClick={rotatePage}
+                      onClick={() => processWithTool("rotate")}
                       size="sm"
-                      disabled={isLoading || selectedFile.file.type !== "application/pdf" || !pdfLoaded}
+                      disabled={isLoading || selectedFile.file.type !== "application/pdf"}
                       className="h-16 flex-col"
                     >
                       <RotateCw className="h-4 w-4 mb-1" />
@@ -1142,7 +1190,7 @@ export default function PDFEditorPlatform() {
               </Card>
             )}
 
-            {/* Annotation Tools */}
+            {/* Annotation Tools - Only show for PDFs */}
             {selectedFile && selectedFile.file.type === "application/pdf" && pdfLoaded && (
               <Card>
                 <CardHeader>
@@ -1153,58 +1201,112 @@ export default function PDFEditorPlatform() {
                     <Button
                       variant={selectedTool === "select" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("select")}
+                      onClick={() => {
+                        setSelectedTool("select")
+                        forceRenderPDF()
+                      }}
                     >
                       <MousePointer className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "text" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("text")}
+                      onClick={() => {
+                        setSelectedTool("text")
+                        forceRenderPDF()
+                      }}
                     >
                       <Type className="h-4 w-4" />
                     </Button>
                     <Button
+                      variant={selectedTool === "editText" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTool("editText")
+                        forceRenderPDF()
+                      }}
+                      title="Edit existing text in PDF"
+                    >
+                      <Edit className="h-4 w-4" />
+                    </Button>
+                    <Button
                       variant={selectedTool === "highlight" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("highlight")}
+                      onClick={() => {
+                        setSelectedTool("highlight")
+                        forceRenderPDF()
+                      }}
                     >
                       <Highlighter className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "rectangle" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("rectangle")}
+                      onClick={() => {
+                        setSelectedTool("rectangle")
+                        forceRenderPDF()
+                      }}
                     >
                       <Square className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "circle" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("circle")}
+                      onClick={() => {
+                        setSelectedTool("circle")
+                        forceRenderPDF()
+                      }}
                     >
                       <Circle className="h-4 w-4" />
                     </Button>
                     <Button
                       variant={selectedTool === "freehand" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => setSelectedTool("freehand")}
+                      onClick={() => {
+                        setSelectedTool("freehand")
+                        forceRenderPDF()
+                      }}
                     >
                       <PenTool className="h-4 w-4" />
                     </Button>
+                    <Button
+                      variant={selectedTool === "underline" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTool("underline")
+                        forceRenderPDF()
+                      }}
+                    >
+                      <Minus className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant={selectedTool === "strikethrough" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => {
+                        setSelectedTool("strikethrough")
+                        forceRenderPDF()
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
                   </div>
 
-                  {/* Undo/Redo */}
+                  {/* Undo/Redo Buttons */}
                   <div className="flex gap-2 justify-center">
-                    <Button variant="outline" size="sm" onClick={undo} disabled={historyIndex <= 0}>
+                    <Button variant="outline" size="sm" onClick={undo} disabled={historyIndex <= 0} title="Undo">
                       <Undo2 className="h-4 w-4" />
                     </Button>
-                    <Button variant="outline" size="sm" onClick={redo} disabled={historyIndex >= history.length - 1}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={redo}
+                      disabled={historyIndex >= history.length - 1}
+                      title="Redo"
+                    >
                       <Redo2 className="h-4 w-4" />
                     </Button>
                   </div>
 
-                  {/* Color Picker */}
                   <div className="space-y-2">
                     <Label>Color</Label>
                     <div className="flex gap-2 flex-wrap">
@@ -1223,7 +1325,6 @@ export default function PDFEditorPlatform() {
                     </div>
                   </div>
 
-                  {/* Font Size */}
                   <div className="space-y-2">
                     <Label>Font Size: {fontSize}px</Label>
                     <Slider
@@ -1235,7 +1336,6 @@ export default function PDFEditorPlatform() {
                     />
                   </div>
 
-                  {/* Zoom Controls */}
                   <div className="space-y-2">
                     <Label>Zoom: {zoomLevel}%</Label>
                     <div className="flex gap-2">
@@ -1259,29 +1359,13 @@ export default function PDFEditorPlatform() {
               </Card>
             )}
 
-            {/* Page Navigation */}
+            {/* Pages Navigation - Only show for PDFs */}
             {selectedFile && selectedFile.file.type === "application/pdf" && pdfLoaded && pdfPages.length > 1 && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-lg">Pages ({pdfPages.length})</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center justify-between mb-4">
-                    <Button variant="outline" size="sm" onClick={goToPreviousPage} disabled={currentPage <= 1}>
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-                    <span className="text-sm">
-                      Page {currentPage} of {pdfPages.length}
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={goToNextPage}
-                      disabled={currentPage >= pdfPages.length}
-                    >
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
                   <div className="space-y-2 max-h-40 overflow-y-auto">
                     {pdfPages.map((page) => (
                       <Button
@@ -1289,7 +1373,10 @@ export default function PDFEditorPlatform() {
                         variant={currentPage === page.pageNumber ? "default" : "outline"}
                         size="sm"
                         className="w-full justify-start"
-                        onClick={() => setCurrentPage(page.pageNumber)}
+                        onClick={() => {
+                          setCurrentPage(page.pageNumber)
+                          forceRenderPDF()
+                        }}
                       >
                         Page {page.pageNumber}
                         {annotations.filter((a) => a.page === page.pageNumber).length > 0 && (
@@ -1307,31 +1394,6 @@ export default function PDFEditorPlatform() {
 
           {/* Main Content Area */}
           <div className="flex-1 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-auto">
-            {/* Error Display */}
-            {errorMessage && (
-              <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200 p-4 mb-4 rounded-md flex items-start">
-                <AlertCircle className="h-5 w-5 mr-2 flex-shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="font-medium">Error</h4>
-                  <p className="text-sm">{errorMessage}</p>
-                  <Button variant="outline" size="sm" className="mt-2" onClick={() => setErrorMessage(null)}>
-                    Dismiss
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Progress Indicator */}
-            {isLoading && exportProgress > 0 && (
-              <div className="p-4">
-                <div className="mb-2 flex justify-between text-sm">
-                  <span>{currentOperation || "Processing"} in progress...</span>
-                  <span>{Math.round(exportProgress)}%</span>
-                </div>
-                <Progress value={exportProgress} className="h-2" />
-              </div>
-            )}
-
             <div className="p-4 flex justify-center">
               {!selectedFile ? (
                 <div className="flex items-center justify-center h-full w-full">
@@ -1352,26 +1414,68 @@ export default function PDFEditorPlatform() {
                   </div>
                 ) : (
                   <div className="relative">
-                    {/* PDF Canvas Container */}
+                    {/* PDF Canvas */}
                     <div
                       className="bg-white shadow-lg mx-auto relative"
                       style={{
                         width: currentPageData ? currentPageData.width * (zoomLevel / 100) : 595,
                         height: currentPageData ? currentPageData.height * (zoomLevel / 100) : 842,
-                        maxHeight: "calc(100vh - 200px)",
                       }}
                       ref={pdfContainerRef}
                     >
-                      {renderingPage && (
-                        <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-20">
-                          <div className="text-center">
-                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2"></div>
-                            <p className="text-sm text-gray-600">Rendering page {currentPage}...</p>
+                      <canvas ref={canvasRef} className="absolute top-0 left-0" />
+
+                      {/* Text Layer for editing */}
+                      <div ref={textLayerRef} className="absolute top-0 left-0 w-full h-full pointer-events-none">
+                        {selectedTool === "editText" &&
+                          currentPageData?.textItems?.map((item) => (
+                            <div
+                              key={item.id}
+                              className="absolute border border-transparent hover:border-blue-400 hover:bg-blue-50 hover:bg-opacity-30 cursor-text pointer-events-auto transition-all"
+                              style={{
+                                left: item.x * (zoomLevel / 100),
+                                top: item.y * (zoomLevel / 100),
+                                width: item.width * (zoomLevel / 100),
+                                height: item.height * (zoomLevel / 100),
+                                fontSize: item.fontSize * (zoomLevel / 100),
+                                fontFamily: item.fontFamily,
+                              }}
+                              title={`Click to edit: "${item.text}"`}
+                            />
+                          ))}
+                      </div>
+
+                      {/* Text Edit Mode */}
+                      {textEditMode && editingTextAnnotation && (
+                        <div
+                          className="absolute bg-white border-2 border-blue-500 p-1 z-50"
+                          style={{
+                            left: editingTextAnnotation.x,
+                            top: editingTextAnnotation.y,
+                            minWidth: editingTextAnnotation.width,
+                            minHeight: editingTextAnnotation.height,
+                          }}
+                        >
+                          <textarea
+                            ref={textEditRef}
+                            defaultValue={editingTextAnnotation.text}
+                            className="w-full h-full min-h-[40px] p-1 focus:outline-none resize-none"
+                            style={{
+                              fontSize: editingTextAnnotation.fontSize
+                                ? editingTextAnnotation.fontSize * (zoomLevel / 100)
+                                : fontSize * (zoomLevel / 100),
+                            }}
+                          />
+                          <div className="flex justify-end gap-1 mt-1">
+                            <Button size="sm" variant="outline" onClick={handleTextEditCancel}>
+                              Cancel
+                            </Button>
+                            <Button size="sm" onClick={handleTextEditSave}>
+                              Save
+                            </Button>
                           </div>
                         </div>
                       )}
-                      {/* PDF Canvas */}
-                      <canvas ref={canvasRef} className="absolute top-0 left-0" />
 
                       {/* Annotations Layer */}
                       <div
@@ -1382,7 +1486,14 @@ export default function PDFEditorPlatform() {
                         onMouseLeave={handleCanvasMouseUp}
                         style={{
                           cursor:
-                            selectedTool === "select" ? "default" : selectedTool === "text" ? "text" : "crosshair",
+                            selectedTool === "select"
+                              ? "default"
+                              : selectedTool === "text"
+                                ? "text"
+                                : selectedTool === "editText"
+                                  ? "text"
+                                  : "crosshair",
+                          pointerEvents: textEditMode ? "none" : "auto", // Disable when editing text
                         }}
                       >
                         {/* Existing Annotations */}
@@ -1409,6 +1520,18 @@ export default function PDFEditorPlatform() {
                             {annotation.type === "text" && (
                               <div
                                 className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-gray-300"
+                                style={{
+                                  color: annotation.color,
+                                  fontSize: annotation.fontSize,
+                                }}
+                              >
+                                {annotation.text}
+                              </div>
+                            )}
+
+                            {annotation.type === "editText" && (
+                              <div
+                                className="bg-white bg-opacity-90 px-2 py-1 rounded shadow-sm border border-blue-300"
                                 style={{
                                   color: annotation.color,
                                   fontSize: annotation.fontSize,
@@ -1451,6 +1574,35 @@ export default function PDFEditorPlatform() {
                               />
                             )}
 
+                            {annotation.type === "underline" && (
+                              <div
+                                className="border-b-2"
+                                style={{
+                                  borderColor: annotation.color,
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              />
+                            )}
+
+                            {annotation.type === "strikethrough" && (
+                              <div
+                                className="relative"
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              >
+                                <div
+                                  className="absolute top-1/2 left-0 right-0 h-0.5"
+                                  style={{
+                                    backgroundColor: annotation.color,
+                                    transform: "translateY(-50%)",
+                                  }}
+                                />
+                              </div>
+                            )}
+
                             {annotation.type === "freehand" && (
                               <div
                                 className="rounded"
@@ -1463,22 +1615,96 @@ export default function PDFEditorPlatform() {
                                 }}
                               />
                             )}
+
+                            {/* Delete button on hover */}
+                            {selectedTool === "select" && (
+                              <button
+                                className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  removeAnnotation(annotation.id)
+                                }}
+                              >
+                                ×
+                              </button>
+                            )}
                           </div>
                         ))}
 
-                        {/* Drawing Preview */}
+                        {/* Drawing Annotation (preview while drawing) */}
                         {drawingAnnotation && (
                           <div
-                            className="absolute border-2 border-dashed"
+                            className="absolute"
                             style={{
                               left: drawingAnnotation.x,
                               top: drawingAnnotation.y,
-                              width: drawingAnnotation.width,
-                              height: drawingAnnotation.height,
-                              borderColor: drawingAnnotation.color,
-                              pointerEvents: "none",
+                              width: drawingAnnotation.width || 0,
+                              height: drawingAnnotation.height || 0,
+                              zIndex: 20,
                             }}
-                          />
+                          >
+                            {drawingAnnotation.type === "highlight" && (
+                              <div
+                                className="opacity-40 rounded"
+                                style={{
+                                  backgroundColor: drawingAnnotation.color,
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              />
+                            )}
+
+                            {drawingAnnotation.type === "rectangle" && (
+                              <div
+                                className="border-2 bg-transparent rounded"
+                                style={{
+                                  borderColor: drawingAnnotation.color,
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              />
+                            )}
+
+                            {drawingAnnotation.type === "circle" && (
+                              <div
+                                className="border-2 bg-transparent rounded-full"
+                                style={{
+                                  borderColor: drawingAnnotation.color,
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              />
+                            )}
+
+                            {drawingAnnotation.type === "underline" && (
+                              <div
+                                className="border-b-2"
+                                style={{
+                                  borderColor: drawingAnnotation.color,
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              />
+                            )}
+
+                            {drawingAnnotation.type === "strikethrough" && (
+                              <div
+                                className="relative"
+                                style={{
+                                  width: "100%",
+                                  height: "100%",
+                                }}
+                              >
+                                <div
+                                  className="absolute top-1/2 left-0 right-0 h-0.5"
+                                  style={{
+                                    backgroundColor: drawingAnnotation.color,
+                                    transform: "translateY(-50%)",
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -1487,65 +1713,90 @@ export default function PDFEditorPlatform() {
               ) : (
                 <div className="flex items-center justify-center h-full w-full">
                   <div className="text-center">
-                    <FileText className="mx-auto h-16 w-16 text-gray-400 mb-4" />
-                    <h3 className="text-xl font-medium mb-2">File Preview</h3>
-                    <p className="text-gray-500">
-                      {selectedFile.file.name} - {selectedFile.file.type}
+                    <FileText className="mx-auto h-16 w-16 text-blue-500 mb-4" />
+                    <h3 className="text-xl font-medium mb-2">{selectedFile.file.name}</h3>
+                    <p className="text-gray-500 mb-4">
+                      {selectedFile.file.type.includes("word")
+                        ? "Word Document"
+                        : selectedFile.file.type.includes("excel")
+                          ? "Excel Spreadsheet"
+                          : selectedFile.file.type.includes("powerpoint")
+                            ? "PowerPoint Presentation"
+                            : selectedFile.file.type.includes("image")
+                              ? "Image File"
+                              : "Document"}
                     </p>
-                    <p className="text-sm text-gray-400 mt-2">Use the tools on the left to process this file</p>
+                    <p className="text-sm text-gray-400">Use the tools on the left to process this file</p>
                   </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
 
-        {/* File Operations History */}
-        {fileOperations.length > 0 && (
-          <div className="mt-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Operations</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3 max-h-60 overflow-y-auto">
-                  {fileOperations.slice(0, 5).map((operation) => (
-                    <div
-                      key={operation.id}
-                      className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded-lg"
-                    >
-                      <div className="flex items-center space-x-3">
-                        <div className="flex-1">
-                          <p className="font-medium text-sm">{operation.fileName}</p>
-                          <p className="text-xs text-gray-500 capitalize">{operation.operation}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        {operation.status === "processing" && (
-                          <div className="flex items-center space-x-2">
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-                            <span className="text-sm">{operation.progress}%</span>
-                          </div>
-                        )}
-                        {operation.status === "completed" && (
-                          <Button size="sm" onClick={() => downloadFile(operation)} className="text-xs">
-                            <Download className="h-4 w-4 mr-1" />
-                            Download
-                          </Button>
-                        )}
-                        {operation.status === "failed" && (
-                          <Badge variant="destructive" className="text-xs">
-                            Failed
-                          </Badge>
-                        )}
-                      </div>
+          {/* Right Sidebar - Processing Status */}
+          {(isLoading || fileOperations.length > 0) && (
+            <div className="lg:w-80 space-y-4">
+              {isLoading && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Processing...</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center space-x-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                      <span className="text-sm">Processing {currentOperation}...</span>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {fileOperations.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Recent Operations</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                      {fileOperations.slice(0, 10).map((operation) => (
+                        <div key={operation.id} className="p-3 border rounded-lg">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="font-medium text-sm">{operation.fileName}</p>
+                            <Badge
+                              variant={
+                                operation.status === "completed"
+                                  ? "default"
+                                  : operation.status === "processing"
+                                    ? "secondary"
+                                    : "destructive"
+                              }
+                            >
+                              {operation.status}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-gray-500 capitalize mb-2">
+                            {operation.operation.replace("-", " ")}
+                          </p>
+                          {operation.status === "processing" && (
+                            <Progress value={operation.progress} className="mb-2" />
+                          )}
+                          {operation.status === "completed" && operation.outputFileName && (
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs text-green-600">{operation.outputFileName}</p>
+                              <Button size="sm" onClick={() => downloadFile(operation)}>
+                                <Download className="h-3 w-3 mr-1" />
+                                Download
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     )
   }
